@@ -1,0 +1,20 @@
+# Prometheus pour les campagnes à plusieurs nœuds (load/compose.multinode.yml).
+# Chaque nœud est interrogé par son nom de service, dans le réseau Compose :
+# les nœuds absents (NODES=2) apparaissent simplement comme cibles en panne.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: praxedo-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["backend:8091"]
+        labels:
+          node: service-1
+      - targets: ["backend-2:8091"]
+        labels:
+          node: service-2
+      - targets: ["backend-3:8091"]
+        labels:
+          node: service-3

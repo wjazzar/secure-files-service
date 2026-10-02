@@ -1,0 +1,33 @@
+# Deux nœuds applicatifs de plus, pour mesurer la montée en charge horizontale.
+#
+#   utilisé par load/run-capacity.mjs quand l'environnement fixe NODES=2 ou 3
+#
+# Les nœuds sont des copies du premier : même image, mêmes limites, même base,
+# même stockage, même antivirus. C'est ce que l'architecture promet — aucun
+# état local, la file vit dans PostgreSQL — et c'est ce que l'essai vérifie.
+#
+# Pas d'équilibreur de charge : k6 répartit lui-même les dépôts (API_TARGETS).
+# Prometheus interroge chaque nœud par son nom de service.
+services:
+  backend-2:
+    extends:
+      file: docker-compose.yml
+      service: backend
+    container_name: praxedo-backend-2
+    ports: !override
+      - "127.0.0.1:8082:8080"
+      - "127.0.0.1:8092:8091"
+
+  backend-3:
+    extends:
+      file: docker-compose.yml
+      service: backend
+    container_name: praxedo-backend-3
+    ports: !override
+      - "127.0.0.1:8083:8080"
+      - "127.0.0.1:8093:8091"
+
+  prometheus:
+    volumes: !override
+      - ./load/prometheus-multinode.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
