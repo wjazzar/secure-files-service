@@ -1,0 +1,1080 @@
+openapi: 3.1.0
+
+info:
+  title: Secure Files API
+  version: 1.10.0-draft
+  description: |
+    Contract-first API of the secure file service.
+
+    **Core guarantee** — a file's content is never served unless the file is
+    `AVAILABLE`, i.e. it has been scanned by the antivirus, declared clean, and
+    promoted to the servable storage area.
+
+    **Public status is a projection.** The service runs a richer internal state
+    machine (retry waits, promotion, …). The API exposes a stable, simplified
+    `status` so that internal changes never break clients. Clients MUST rely on
+    the server-computed `downloadable` and `terminal` flags rather than
+    deriving them from `status`, and MUST tolerate unknown `status` values.
+
+    **Errors** follow RFC 9457 (`application/problem+json`) and always carry a
+    stable machine-readable `code`. Clients branch on `code`, never on `title`
+    or `detail`.
+
+    **Authentication — always required.** OpenID Connect (Keycloak). There
+    is no anonymous access: every operation requires one of two credentials
+    — downloads included, and nothing else: there is no signed link, no
+    second secret. A browser downloads by navigating to the content URL; its
+    session cookie goes along by itself:
+    - **the web interface: a session cookie** (`sessionCookie`). The service
+      is Keycloak's *confidential* client (client id + secret, authorization
+      code with PKCE); the browser never holds a token, only an opaque
+      `HttpOnly` session cookie — the session itself is kept by the server,
+      shared by all its nodes. Writes sent with this cookie must echo the
+      `XSRF-TOKEN` cookie in the `X-XSRF-TOKEN` header, or get
+      `403 CSRF_TOKEN_INVALID`. Signing in is a browser navigation to
+      `GET /api/v1/auth/login`.
+    - **third-party systems: a JWT bearer token** (`bearerAuth`). A request
+      with an `Authorization` header is judged on it alone: no session is
+      created, no cookie set, no CSRF token asked.
+    Files are scoped to their owner (the `sub` Keycloak vouched for, the same
+    through either credential); a file owned by someone else answers `404`,
+    exactly like an unknown file, so that the API never reveals its
+    existence. `401` responses are declared on every operation.
+
+    **Isolation: one private file space per user, no roles.** Every
+    authenticated user can deposit, list, follow and download **their own**
+    files only. A file deposited by someone else answers `404`, exactly like
+    an unknown file.
+
+    This document is the single source of truth shared by the backend and the
+    frontend. See `contracts/README.md` for the rationale behind each choice.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - sessionCookie: []   # the web interface
+  - bearerAuth: []      # third-party systems
+
+tags:
+  - name: files
+    description: Deposit, track, list and download files
+  - name: auth
+    description: >
+      The web interface's session: signing in through Keycloak,
+      reading who is signed in, signing out.
+
+paths:
+
+  /api/v1/files:
+
+    post:
+      tags: [files]
+      operationId: uploadFile
+      summary: Deposit a file
+      description: |
+        The request body is the **raw file content**, streamed
+        (`application/octet-stream`). Multipart is intentionally not supported:
+        it forces intermediate buffering on the server.
+
+        The file is stored in quarantine and queued for antivirus analysis. The
+        response is returned **before** the analysis: the file starts in status
+        `PENDING` and is not downloadable. Track it with
+        `GET /api/v1/files/{fileId}`.
+
+        **Size limit** — files larger than the configured maximum (500 MB) are
+        rejected with `413 FILE_TOO_LARGE`, as soon as `Content-Length` is read.
+        The limit is not exposed by a dedicated endpoint: clients embed it in
+        their configuration, the server remains the authority.
+
+        **Idempotency** — when `Idempotency-Key` is supplied, replaying the same
+        request (same file name, same `Content-Length`) returns the file the
+        first request stored, in its current state, and never creates a second
+        file. Reusing a key for a request with another name or length yields
+        `422`.
+      parameters:
+        - $ref: '#/components/parameters/FileNameHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - name: Content-Length
+          in: header
+          required: true
+          description: Exact size of the body in bytes. Enforced while streaming.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: >
+            File received and queued for analysis. `Retry-After` suggests when
+            to look at it (`GET /files/{fileId}`), sized to the file like the
+            detail's.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileDetail'
+        '400':
+          description: >
+            Invalid request. Codes: `INVALID_FILE_NAME`, `EMPTY_FILE`,
+            `CONTENT_LENGTH_MISMATCH`, `INVALID_PARAMETER`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/CsrfTokenInvalid'
+        '408':
+          description: >
+            The body was still arriving when its transfer deadline passed. Code
+            `UPLOAD_TOO_SLOW`. The deadline is sized to the declared
+            `Content-Length` (a floor plus a time per MiB, about 1 Mbit/s at
+            the slowest): it cuts a client that trickles its body, which no
+            idle timeout would. Nothing is kept; the upload may be sent again,
+            with the same `Idempotency-Key`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: >
+            A request with the same `Idempotency-Key` is still being processed.
+            Code: `IDEMPOTENCY_REQUEST_IN_PROGRESS`.
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '411':
+          description: Missing `Content-Length`. Code `LENGTH_REQUIRED`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: >
+            File larger than the accepted maximum (500 MB). Code:
+            `FILE_TOO_LARGE`, with `maxFileSizeBytes`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: >
+            `Idempotency-Key` already used for a different request (another
+            file name or another `Content-Length`).
+            Code: `IDEMPOTENCY_KEY_REUSED`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: >
+            Admission refused to protect the service, before the body is read.
+            Code `TOO_MANY_PENDING_FILES`: too many files awaiting analysis.
+            Code `TOO_MANY_CONCURRENT_UPLOADS`: the node receiving the request
+            already takes as many uploads as it accepts at once; retrying after
+            `Retry-After` (1 s) usually succeeds. A client sending
+            `Expect: 100-continue` is answered before it sends the body; any
+            other client may see the connection closed after the response, as
+            the service reads at most 64 KB of a refused body.
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+    get:
+      tags: [files]
+      operationId: listFiles
+      summary: List files (page-number pagination, sort, filter, search)
+      description: |
+        Returns one page of files: only the caller's files.
+
+        **Pagination** is page-number based (`page` is **zero-based**, as in
+        Spring Data and TanStack Table) and returns the total count, which a
+        paginated table needs. Keyset pagination remains an improvement track
+        should a single owner reach tens of thousands of files (see
+        `contracts/README.md`).
+
+        The sort is always completed by `id` in the same direction, so that the
+        order is total and pages never overlap for equal keys.
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: |
+            Zero-based page index. A page may start at most 10 000 files deep
+            (`page × size ≤ 10 000`, `size` taken after its cap); deeper is
+            refused with `400 INVALID_PARAMETER` — narrow the list with `q` or
+            `status` instead.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sort
+          in: query
+          required: false
+          description: >
+            Sort key and direction, `field,direction` (Spring Data format).
+            Unknown field or direction yields `400 INVALID_PARAMETER`.
+          schema:
+            type: string
+            enum:
+              - uploadedAt,desc
+              - uploadedAt,asc
+              - filename,asc
+              - filename,desc
+              - sizeBytes,desc
+              - sizeBytes,asc
+            default: uploadedAt,desc
+        - name: status
+          in: query
+          required: false
+          description: >
+            Keep only files in these statuses. Repeat the parameter to combine
+            (`?status=PENDING&status=SCANNING`).
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/FileStatus'
+            uniqueItems: true
+        - name: q
+          in: query
+          required: false
+          description: Search on the file name (contains), insensitive to case and accents.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        '200':
+          description: One page of files.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoCache'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FilePage'
+        '400':
+          description: Invalid parameter. Code `INVALID_PARAMETER`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/files/summary:
+
+    get:
+      tags: [files]
+      operationId: getFilesSummary
+      summary: Count files per status
+      description: |
+        Feeds the status filter counters of the interface. Honors the same `q`
+        search as the list so that counters match the visible results. Counts
+        only the caller's files.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Same search as `GET /api/v1/files`.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        '200':
+          description: Counters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FilesSummary'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/files/{fileId}:
+
+    get:
+      tags: [files]
+      operationId: getFile
+      summary: Get a file's metadata and status
+      description: |
+        Designed for polling. The response carries an `ETag` and
+        `Cache-Control: no-cache`: browsers revalidate on their own with
+        `If-None-Match` and receive a cheap `304` while nothing changed. While
+        the file is not `terminal`, `Retry-After` suggests the next poll delay,
+        on the `200` and on the `304` alike. It is sized to the file: 2 s, plus
+        0.05 s per MiB, at most 30 s (1 MB → 2 s, 500 MB → 26 s) — a large
+        file takes tens of seconds to analyse and promote, and every poll, even
+        answered `304`, is a request the service has to authenticate and look
+        up.
+      parameters:
+        - $ref: '#/components/parameters/FileIdPath'
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File metadata.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoCache'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileDetail'
+        '304':
+          description: Unchanged since the supplied `ETag`.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/FileNotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/files/{fileId}/content:
+
+    get:
+      tags: [files]
+      operationId: downloadFileContent
+      summary: Download a file's content
+      description: |
+        **The one way out**, for browsers and third-party systems alike. The
+        caller's identity is the only credential:
+        - **browsers** navigate here natively (`<a href download>`), so that
+          the download manager streams the file to disk — reading it with
+          `fetch` would load up to 500 MB in the page. The `HttpOnly` session
+          cookie goes along by itself; a `GET` needs no CSRF token;
+        - **third-party systems** send their bearer token.
+
+        The servable state is checked **at the moment of serving**, on every
+        request: succeeds only for an `AVAILABLE` file the caller owns. The
+        interface checks the file detail first (`downloadable`) so that it can
+        explain a refusal instead of leaving a failed download. The content is
+        streamed; byte ranges are supported so that interrupted downloads can
+        resume.
+
+        Responses always carry `Content-Disposition: attachment`,
+        `X-Content-Type-Options: nosniff` and a `Content-Type` of
+        `application/octet-stream`: content is never rendered by the browser.
+      parameters:
+        - $ref: '#/components/parameters/FileIdPath'
+        - name: Range
+          in: header
+          required: false
+          description: Single byte range, e.g. `bytes=0-1048575`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Full content.
+          headers:
+            Content-Disposition:
+              $ref: '#/components/headers/ContentDisposition'
+            Content-Length:
+              $ref: '#/components/headers/ContentLength'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Accept-Ranges:
+              $ref: '#/components/headers/AcceptRanges'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Requested byte range.
+          headers:
+            Content-Range:
+              description: Range served, e.g. `bytes 0-1048575/52428800`.
+              schema:
+                type: string
+            Content-Disposition:
+              $ref: '#/components/headers/ContentDisposition'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/FileNotFound'
+        '409':
+          $ref: '#/components/responses/FileNotServable'
+        '416':
+          description: Range not satisfiable. Code `RANGE_NOT_SATISFIABLE`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/auth/login:
+
+    get:
+      tags: [auth]
+      operationId: signIn
+      summary: Start signing in (browser navigation)
+      description: |
+        **Not an API call: a top-level browser navigation.** Answers
+        `302` to Keycloak's sign-in page with the authorization code flow:
+        `state`, `nonce` and PKCE (`S256`). The PKCE verifier and the nonce stay
+        with the service, in the browser's session — which this call opens if
+        there is none, setting the session cookie. Keycloak then sends the
+        browser back to `GET /api/v1/auth/callback`.
+      security: []
+      parameters:
+        - name: redirect
+          in: query
+          required: false
+          description: >
+            Where to go back after signing in. Only a local path of the
+            interface is honoured (`/files?status=AVAILABLE`); anything else —
+            another origin, `//host` — is replaced by `/`.
+          schema:
+            type: string
+            maxLength: 2048
+      responses:
+        '302':
+          description: Redirection to Keycloak.
+          headers:
+            Location:
+              description: Keycloak's authorization endpoint, with the request parameters.
+              schema:
+                type: string
+
+  /api/v1/auth/callback:
+
+    get:
+      tags: [auth]
+      operationId: signInCallback
+      summary: Complete signing in (Keycloak's redirection)
+      description: |
+        **Keycloak's redirection, never called directly.** The
+        service checks `state` against the session of *this* browser, redeems
+        `code` at Keycloak's token endpoint with its client secret and the PKCE
+        verifier, and verifies the identity token (signature, issuer, audience,
+        expiry, `nonce`). The session then belongs to the signed-in user, under
+        a new identifier: the session cookie is replaced. No token issued by
+        Keycloak reaches the browser.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: |
+            Success: back to the `redirect` given at sign-in, with the session
+            cookie. Failure — any check that did not pass, Keycloak
+            unreachable — back to `/login?error=sign-in-failed` (or
+            `sign-in-cancelled`), without saying which check failed.
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              description: The session cookie on success.
+              schema:
+                type: string
+
+  /api/v1/auth/session:
+
+    get:
+      tags: [auth]
+      operationId: getSession
+      summary: Who is signed in
+      description: |
+        The interface calls it on start: `200` means signed in,
+        `401` means it must send the browser to `GET /api/v1/auth/login`. The
+        response also issues the `XSRF-TOKEN` cookie that writes must echo.
+        With a bearer token, it describes the token's subject.
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The signed-in user.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+  /api/v1/auth/logout:
+
+    post:
+      tags: [auth]
+      operationId: signOut
+      summary: Sign out
+      description: |
+        Closes the session here and removes the cookie, then
+        answers where the browser must go next: Keycloak's end-session address
+        (OpenID Connect RP-initiated logout), which ends the Keycloak session
+        too — the next sign-in asks for the password again — and sends the
+        browser back to `/login?signed-out`. The interface navigates to it: a
+        `fetch` cannot follow a redirection to another origin, hence an address
+        in the body rather than a `302`. Signing out without a session, or
+        twice, is not an error: the address is then the login page itself.
+      security: []
+      responses:
+        '200':
+          description: Signed out here; where the browser goes next.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Logout'
+        '403':
+          $ref: '#/components/responses/CsrfTokenInvalid'
+
+components:
+
+  securitySchemes:
+
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-praxedo-session
+      description: |
+        **The web interface.** An opaque session identifier: `HttpOnly`,
+        `Secure`, `SameSite=Lax` (the return from Keycloak is a cross-site
+        navigation when Keycloak is on another domain), no expiry of its own.
+        The session is forgotten after 30 minutes without a request, and
+        follows Keycloak's: it is revalidated with Keycloak (refresh token,
+        client secret) each time the access token Keycloak issued has expired,
+        and ends when Keycloak refuses. Named `praxedo-session` (no prefix) on
+        plain-HTTP development setups.
+
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        **Third-party systems.** Access token issued by the Keycloak realm
+        `praxedo` (client credentials). The API checks the signature (JWKS), the
+        issuer and the audience `praxedo-files-api`. No role is required: the
+        token subject (`sub`) identifies the owner of the file space.
+
+  parameters:
+
+    FileIdPath:
+      name: fileId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    FileNameHeader:
+      name: X-File-Name
+      in: header
+      required: true
+      description: |
+        Original file name, **percent-encoded UTF-8** (as produced by
+        JavaScript `encodeURIComponent`). The server sanitises it (control and
+        bidirectional characters removed, length capped) and stores it as
+        metadata only: it is never used as a storage key or path.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 1024
+
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-generated unique key (UUID recommended), reused unchanged when
+        retrying the same upload. Kept 24 hours. Scoped to the caller.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+
+  headers:
+
+    Location:
+      description: URL of the created file resource.
+      schema:
+        type: string
+
+    RetryAfter:
+      description: Suggested delay in seconds before retrying or polling again.
+      schema:
+        type: integer
+        minimum: 1
+
+    ETag:
+      description: Entity tag of the representation.
+      schema:
+        type: string
+
+    CacheControlNoCache:
+      description: >
+        Always `no-cache`: the browser may keep the response but must
+        revalidate it (conditional request, `304`) before reusing it.
+      schema:
+        type: string
+        const: no-cache
+
+    ContentDisposition:
+      description: >
+        Always `attachment`, with the sanitised original name encoded per
+        RFC 6266 / RFC 8187 (`filename*=UTF-8''…`).
+      schema:
+        type: string
+
+    ContentLength:
+      description: Size of the body in bytes.
+      schema:
+        type: integer
+        format: int64
+
+    AcceptRanges:
+      description: Always `bytes`.
+      schema:
+        type: string
+        const: bytes
+
+  responses:
+
+    Unauthenticated:
+      description: >
+        No session cookie nor access token, or one that is expired, ended or
+        invalid. Code `UNAUTHENTICATED`.
+      headers:
+        WWW-Authenticate:
+          description: '`Bearer` challenge (RFC 6750).'
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    CsrfTokenInvalid:
+      description: >
+        **Session cookie only.** A write sent with the session cookie
+        without echoing the `XSRF-TOKEN` cookie in `X-XSRF-TOKEN`. Code
+        `CSRF_TOKEN_INVALID`. The only `403` of the API: there are no roles.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    FileNotFound:
+      description: >
+        Unknown file. Code `FILE_NOT_FOUND`. Also returned for files the caller
+        may not access, so that the API never reveals their existence.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    FileNotServable:
+      description: |
+        The file exists but its content cannot be served. Codes:
+        - `FILE_NOT_READY` — analysis not finished (retryable, with `Retry-After`);
+        - `FILE_INFECTED` — a threat was detected (final);
+        - `FILE_UNSCANNABLE` — the antivirus could not analyse it (final);
+        - `FILE_SCAN_FAILED` — analysis failed after all attempts (final).
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    ServiceUnavailable:
+      description: >
+        A dependency required by this operation is unavailable (storage or
+        database). Code `SERVICE_UNAVAILABLE`. Retry later.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+
+    FileStatus:
+      type: string
+      description: |
+        Public status of a file. **Extensible**: new values may be added.
+        Clients must not break on an unknown value and must rely on
+        `downloadable` and `terminal`.
+
+        | Value | Meaning | Downloadable | Terminal |
+        |---|---|---|---|
+        | `PENDING` | Received, waiting for analysis (or for a scheduled retry) | no | no |
+        | `SCANNING` | Being analysed, or being made available | no | no |
+        | `AVAILABLE` | Analysed, clean, available | **yes** | yes |
+        | `INFECTED` | A threat was detected | no | yes |
+        | `UNSCANNABLE` | The antivirus reported that it could not analyse it (engine limits reached, content it cannot read) | no | yes |
+        | `FAILED` | Analysis failed after all attempts | no | yes |
+      enum:
+        - PENDING
+        - SCANNING
+        - AVAILABLE
+        - INFECTED
+        - UNSCANNABLE
+        - FAILED
+
+    StatusReasonCode:
+      type: string
+      description: |
+        Machine-readable explanation of a non-nominal status. **Extensible.**
+        The interface maps each code to a localized message.
+        `ENCRYPTED_ARCHIVE` is reserved: the antivirus, as configured, does not
+        report encrypted archives, so the service does not emit it today.
+      enum:
+        - SCAN_RETRY_SCHEDULED
+        - EXCEEDS_SCANNER_SIZE_LIMIT
+        - ENCRYPTED_ARCHIVE
+        - SCANNER_LIMITS_EXCEEDED
+        - SCAN_ATTEMPTS_EXHAUSTED
+
+    FileSummary:
+      type: object
+      description: A file as shown in a list.
+      required:
+        - id
+        - filename
+        - sizeBytes
+        - contentType
+        - status
+        - downloadable
+        - terminal
+        - uploadedAt
+        - statusChangedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+          description: Sanitised original name. Display as plain text only.
+          maxLength: 255
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 1
+        contentType:
+          type: string
+          description: >
+            Type detected by the server from the content, never the type
+            declared by the client. `application/octet-stream` when unknown.
+        status:
+          $ref: '#/components/schemas/FileStatus'
+        downloadable:
+          type: boolean
+          description: >
+            Computed by the server. The **only** field a client may use to
+            decide whether to offer a download.
+        terminal:
+          type: boolean
+          description: >
+            `true` when no further automatic change is expected. Clients stop
+            polling a file once it is terminal.
+        uploadedAt:
+          type: string
+          format: date-time
+        statusChangedAt:
+          type: string
+          format: date-time
+
+    FileDetail:
+      description: A file with its full analysis information.
+      allOf:
+        - $ref: '#/components/schemas/FileSummary'
+        - type: object
+          required:
+            - sha256
+            - scanAttempts
+            - scan
+            - statusReason
+            - links
+          properties:
+            sha256:
+              type: string
+              description: SHA-256 of the content, lowercase hexadecimal.
+              pattern: '^[0-9a-f]{64}$'
+            scanAttempts:
+              type: integer
+              minimum: 0
+              description: Number of analysis attempts so far.
+            scan:
+              oneOf:
+                - $ref: '#/components/schemas/ScanVerdict'
+                - type: 'null'
+              description: >
+                Antivirus verdict. `null` while no analysis has completed, and
+                for `FAILED` files (no verdict could be obtained).
+            statusReason:
+              oneOf:
+                - $ref: '#/components/schemas/StatusReasonCode'
+                - type: 'null'
+              description: Why the file is in a non-nominal status, if relevant.
+            links:
+              $ref: '#/components/schemas/FileLinks'
+
+    ScanVerdict:
+      type: object
+      required:
+        - result
+        - engine
+        - scannedAt
+        - durationMs
+      properties:
+        result:
+          type: string
+          enum: [CLEAN, INFECTED, UNSCANNABLE]
+        threatName:
+          type: [string, 'null']
+          description: Name of the detected threat, when `result` is `INFECTED`.
+        engine:
+          type: string
+          description: Antivirus engine name.
+        engineVersion:
+          type: [string, 'null']
+        signatureVersion:
+          type: [string, 'null']
+          description: Version of the signature database used for the verdict.
+        scannedAt:
+          type: string
+          format: date-time
+        durationMs:
+          type: integer
+          minimum: 0
+
+    FileLinks:
+      type: object
+      required: [self]
+      properties:
+        self:
+          type: string
+          description: URL of the file resource.
+        content:
+          type: [string, 'null']
+          description: >
+            Content URL, present only when the file is downloadable. Browsers
+            navigate to it; third-party systems call it with their token.
+
+    FilePage:
+      type: object
+      description: >
+        One page of files. Same shape as Spring Data's `PagedModel`
+        serialization.
+      required: [content, page]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileSummary'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+
+    PageMetadata:
+      type: object
+      required: [size, number, totalElements, totalPages]
+      properties:
+        size:
+          type: integer
+          minimum: 1
+          description: Requested page size.
+        number:
+          type: integer
+          minimum: 0
+          description: Zero-based index of this page.
+        totalElements:
+          type: integer
+          format: int64
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+
+    FilesSummary:
+      type: object
+      required: [total, byStatus]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        byStatus:
+          type: object
+          description: >
+            Count per status. Every known status is present, with 0 when empty.
+          required: [PENDING, SCANNING, AVAILABLE, INFECTED, UNSCANNABLE, FAILED]
+          properties:
+            PENDING: { type: integer, minimum: 0 }
+            SCANNING: { type: integer, minimum: 0 }
+            AVAILABLE: { type: integer, minimum: 0 }
+            INFECTED: { type: integer, minimum: 0 }
+            UNSCANNABLE: { type: integer, minimum: 0 }
+            FAILED: { type: integer, minimum: 0 }
+          additionalProperties:
+            type: integer
+            minimum: 0
+
+    Session:
+      type: object
+      description: >
+        Who is signed in. No token and no expiry: the browser has
+        nothing to do with either.
+      required: [id, username, displayName, email]
+      properties:
+        id:
+          type: string
+          description: The Keycloak subject (`sub`), owner of the file space.
+        username:
+          type: string
+        displayName:
+          type: string
+        email:
+          type: [string, 'null']
+
+    Logout:
+      type: object
+      description: >
+        Where the browser goes once its session here is closed.
+      required: [logoutUrl]
+      properties:
+        logoutUrl:
+          type: string
+          description: >
+            Keycloak's end-session address, with `id_token_hint` and
+            `post_logout_redirect_uri` — or `/login?signed-out` when there was
+            no session to end.
+
+    ErrorCode:
+      type: string
+      description: Stable machine-readable error code. **Extensible.**
+      enum:
+        - INVALID_PARAMETER
+        - INVALID_FILE_NAME
+        - EMPTY_FILE
+        - LENGTH_REQUIRED
+        - CONTENT_LENGTH_MISMATCH
+        - FILE_TOO_LARGE
+        - UPLOAD_TOO_SLOW
+        - IDEMPOTENCY_REQUEST_IN_PROGRESS
+        - IDEMPOTENCY_KEY_REUSED
+        - TOO_MANY_PENDING_FILES
+        - TOO_MANY_CONCURRENT_UPLOADS
+        - UNAUTHENTICATED
+        - CSRF_TOKEN_INVALID
+        - FILE_NOT_FOUND
+        - FILE_NOT_READY
+        - FILE_INFECTED
+        - FILE_UNSCANNABLE
+        - FILE_SCAN_FAILED
+        - RANGE_NOT_SATISFIABLE
+        - SERVICE_UNAVAILABLE
+        - INTERNAL_ERROR
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details, extended with a stable `code`.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          description: URI identifying the problem type.
+        title:
+          type: string
+          description: Short human-readable summary (not for branching).
+        status:
+          type: integer
+          description: HTTP status code.
+        detail:
+          type: string
+          description: Human-readable explanation (never contains internal details).
+        instance:
+          type: string
+          description: URI of the request that caused the problem.
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        fileStatus:
+          $ref: '#/components/schemas/FileStatus'
+        retryAfterSeconds:
+          type: integer
+          minimum: 1
+        maxFileSizeBytes:
+          type: integer
+          format: int64
+          description: Present with `FILE_TOO_LARGE`.
