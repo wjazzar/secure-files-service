@@ -179,9 +179,20 @@ try {
     }
     Set-Location (Join-Path $root 'frontend')
     $installed = Join-Path 'node_modules' '.package-lock.json'
-    if (-not (Test-Path $installed) -or (Get-Item 'package-lock.json').LastWriteTime -gt (Get-Item $installed).LastWriteTime) {
+    # node_modules contient des binaires natifs (Vite, Tailwind) : installé sous
+    # Linux ou WSL, il ne sert pas sous Windows, et inversement. La plateforme
+    # de l'installation est notée à côté ; si elle change, on réinstalle.
+    $platform = (node -p "process.platform + '-' + process.arch" | Out-String).Trim()
+    $marker = Join-Path $root 'frontend\node_modules\.platform'
+    $installedFor = ''
+    if (Test-Path $marker) { $installedFor = (Get-Content $marker | Out-String).Trim() }
+    if ($installedFor -and $installedFor -ne $platform) {
+        Write-Host "  dépendances installées pour $installedFor, cette machine est $platform"
+    }
+    if (-not (Test-Path $installed) -or (Get-Item 'package-lock.json').LastWriteTime -gt (Get-Item $installed).LastWriteTime -or $installedFor -ne $platform) {
         Write-Host '  installation des dépendances (npm ci)...'
         if ((Invoke-Native { npm ci --no-audit --no-fund }) -ne 0) { Stop-WithError "L'installation des dépendances a échoué." }
+        [IO.File]::WriteAllText($marker, $platform)
     }
     Write-Host "  Ouvrir http://127.0.0.1:5173 - Ctrl+C arrête l'interface (le reste continue de tourner)"
     Write-Host ''

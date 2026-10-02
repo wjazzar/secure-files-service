@@ -140,9 +140,22 @@ if curl -s -o /dev/null --max-time 2 http://127.0.0.1:5173/; then
 ./scripts/check.sh dit si elle est branchée sur le service ou sur des bouchons."
 fi
 cd frontend
-if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
+# node_modules contient des binaires natifs (Vite, Tailwind) : installé sous
+# Windows, il ne sert ni sous Linux ni sous WSL, et inversement. La plateforme
+# de l'installation est notée à côté ; si elle change, on réinstalle.
+platform="$(node -p "process.platform + '-' + process.arch" | tr -d '\r\n')"
+installed_for=""
+if [ -f node_modules/.platform ]; then
+    installed_for="$(tr -d '\r\n' < node_modules/.platform)"
+fi
+if [ -n "$installed_for" ] && [ "$installed_for" != "$platform" ]; then
+    echo "  dépendances installées pour $installed_for, cette machine est $platform"
+fi
+if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ] \
+    || [ "$installed_for" != "$platform" ]; then
     echo "  installation des dépendances (npm ci)…"
     npm ci --no-audit --no-fund
+    printf '%s' "$platform" > node_modules/.platform
 fi
 echo "  Ouvrir http://127.0.0.1:5173 — Ctrl+C arrête l'interface (le reste continue de tourner)"
 echo

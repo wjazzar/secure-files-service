@@ -359,6 +359,13 @@ Les choix, les hypothèses et la garantie de sécurité sont dans README.md.
       dev:mock). check dit laquelle. L'arrêter (Ctrl+C dans son terminal),
       puis relancer start.
 
+  « Cannot find native binding » au lancement de l'interface
+      Les dépendances de l'interface ont été installées depuis un autre
+      système (Windows, puis WSL ou Linux dans le même dossier, ou
+      l'inverse) : leurs binaires natifs ne sont pas ceux de cette
+      machine. start le détecte et réinstalle. À la main : supprimer
+      frontend/node_modules, puis npm ci dans frontend/.
+
   L'antivirus reste « starting » plusieurs minutes
       Normal au premier démarrage (téléchargement des signatures). S'il
       finit « unhealthy » : la mémoire allouée à Docker est probablement
