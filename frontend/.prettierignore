@@ -1,0 +1,5 @@
+dist
+coverage
+public/mockServiceWorker.js
+*.md
+src/components/ui
