@@ -1,0 +1,34 @@
+# Profil « local » : le service lancé sur le poste (IDE, ./mvnw spring-boot:run),
+# branché sur l'infrastructure de docker-compose.yml.
+#
+# Ces valeurs sont celles de DÉVELOPPEMENT LOCAL déclarées dans
+# docker-compose.yml et infra/ : publiques, donc jamais ailleurs. Elles vivent
+# ici, dans un profil qu'on active exprès, et non en valeur par défaut dans
+# application.yml : sans ce profil, un identifiant manquant fait échouer le
+# démarrage au lieu de laisser passer un mot de passe connu de tous (audit S-02).
+#
+# Chaque valeur reste remplaçable par sa variable d'environnement.
+
+spring:
+  datasource:
+    username: ${DB_USERNAME:praxedo_app}
+    password: ${DB_PASSWORD:praxedo-app-local}
+  flyway:
+    user: ${DB_OWNER_USERNAME:praxedo_owner}
+    password: ${DB_OWNER_PASSWORD:praxedo-owner-local}
+
+praxedo:
+  storage:
+    ingest:
+      access-key: ${S3_INGEST_KEY:praxedo-ingest}
+      secret-key: ${S3_INGEST_SECRET:praxedo-ingest-secret}
+    worker:
+      access-key: ${S3_WORKER_KEY:praxedo-worker}
+      secret-key: ${S3_WORKER_SECRET:praxedo-worker-secret}
+    delivery:
+      access-key: ${S3_DELIVERY_KEY:praxedo-delivery}
+      secret-key: ${S3_DELIVERY_SECRET:praxedo-delivery-secret}
+  security:
+    oidc:
+      client:
+        client-secret: ${OIDC_CLIENT_SECRET:praxedo-local-web-secret-do-not-reuse}

@@ -1,0 +1,310 @@
+# Configuration du service — voir backend/ARCHITECTURE.md §10.
+#
+# Aucun secret ici, pas même en valeur par défaut (audit S-02) : un identifiant
+# ou un mot de passe absent fait échouer le démarrage, en nommant la variable
+# attendue. Qui lance le service fournit ses valeurs :
+#   - docker-compose.yml, par les variables d'environnement du conteneur ;
+#   - l'IDE ou ./mvnw spring-boot:run, par le profil « local »
+#     (application-local.yml : les valeurs de DÉVELOPPEMENT de docker-compose.yml) ;
+#   - les tests, par les conteneurs qu'ils démarrent.
+# Les adresses (localhost) gardent un défaut : ce ne sont pas des secrets.
+
+spring:
+  application:
+    name: praxedo-securefiles
+
+  # Threads virtuels : le service est bloquant par nature (flux vers le stockage
+  # et vers l'antivirus). Avec les threads virtuels, MVC suffit — pas de WebFlux.
+  threads:
+    virtual:
+      enabled: true
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/praxedo}
+    # Le rôle d'EXÉCUTION (praxedo_app) : il lit et écrit des lignes, il ne peut
+    # rien retirer du schéma (V8, infra/postgres/initdb).
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    # Pool de l'API (requêtes, JPA, Flyway, sessions, jauges). La file de
+    # travail a le sien, dimensionné sur les workers : ils ne peuvent pas être
+    # affamés par les requêtes (DataSourceConfiguration). Par nœud et en tout :
+    # 10 + workers + 2 connexions, à garder sous le max_connections de PostgreSQL.
+    hikari:
+      pool-name: api
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      # Le nom des sessions dans pg_stat_activity : praxedo-api ou praxedo-queue.
+      data-source-properties:
+        ApplicationName: praxedo-api
+      # Hikari attend des millisecondes : une durée ISO ne se lie pas ici.
+      connection-timeout: 5000
+
+  jpa:
+    # Flyway est propriétaire du schéma : Hibernate ne le touche pas.
+    hibernate:
+      ddl-auto: none
+    # Coupé explicitement : l'« open session in view » garde une connexion
+    # ouverte pendant tout le rendu de la réponse, ce qui est précisément ce
+    # qu'il ne faut pas faire quand on sert des fichiers de 500 Mo en flux.
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Le PROPRIÉTAIRE du schéma (praxedo_owner) : seul Flyway s'en sert, sur sa
+    # propre connexion, le temps de migrer.
+    user: ${DB_OWNER_USERNAME}
+    password: ${DB_OWNER_PASSWORD}
+
+  # Sessions du navigateur (ADR-0012) : Spring Session les range dans
+  # PostgreSQL, pas dans la mémoire d'un nœud (règle B-10).
+  session:
+    # Inactivité au-delà de laquelle la session est oubliée : alignée sur celle
+    # de Keycloak (ssoSessionIdleTimeout).
+    timeout: 30m
+    jdbc:
+      # Flyway est propriétaire du schéma (V7) : Spring Session ne crée rien.
+      initialize-schema: never
+
+  # Règle B-2 : aucun analyseur multipart ne doit pouvoir se réveiller sur le
+  # chemin de dépôt. Le corps est lu en flux, brut.
+  servlet:
+    multipart:
+      enabled: false
+
+server:
+  port: ${SERVER_PORT:8080}
+  # Arrêt propre : les analyses en cours se terminent, les baux sont rendus.
+  shutdown: graceful
+  tomcat:
+    # Redirections relatives (retour de connexion) : l'adresse publique est
+    # celle que le navigateur a utilisée, quel que soit le proxy devant.
+    use-relative-redirects: true
+    # Un dépôt refusé (trop gros, nœud plein, file pleine) l'est avant la
+    # lecture de son corps ; on n'en lit ensuite que 64 Ko par politesse, puis
+    # la connexion est coupée. À 2 Mo, Tomcat lisait en entier chaque petit
+    # dépôt refusé : en saturation, l'essentiel des octets reçus appartenait à
+    # des dépôts refusés. Le client peut recevoir une coupure au lieu du 429 —
+    # c'est pour cela que l'interface vérifie la taille avant d'envoyer (règle
+    # F-8), et qu'un système tiers envoie « Expect: 100-continue » : son corps
+    # n'est alors demandé qu'une fois le dépôt admis (voir HttpConnectorConfiguration).
+    max-swallow-size: 64KB
+
+management:
+  # Un port à part, qui n'est pas celui de l'API (audit S-08) : métriques et
+  # sondes ne se lisent pas par l'adresse publique du service, où /actuator
+  # répond 404. Prometheus et les sondes de l'orchestrateur viennent ici ;
+  # docker-compose.yml ne le publie que sur 127.0.0.1.
+  server:
+    port: ${MANAGEMENT_PORT:8091}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  metrics:
+    # Chaque série porte le nom du service : un Prometheus partagé les distingue.
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      # Histogrammes des requêtes HTTP : les centiles (p95, p99) se calculent
+      # dans Prometheus, agrégés sur plusieurs nœuds — ce qu'un centile calculé
+      # par nœud ne permet pas.
+      percentiles-histogram:
+        http.server.requests: true
+
+# ─────────────────────────────────────────────────────────────────────────
+# Le service — backend/ARCHITECTURE.md §10.2
+# ─────────────────────────────────────────────────────────────────────────
+praxedo:
+  upload:
+    # 500 Mo : sous la limite de volume analysé de l'antivirus (MAX_SCAN_SIZE
+    # 1024M) — tout fichier accepté est analysable en entier.
+    max-size-bytes: ${UPLOAD_MAX_SIZE_BYTES:524288000}
+    # Au-delà : 429. La file d'attente est la seule ressource réellement bornée.
+    max-pending-files: ${UPLOAD_MAX_PENDING_FILES:500}
+    # Dépôts reçus en même temps par CE nœud ; au-delà : 429 immédiat, sans
+    # base ni lecture du corps. Avec les threads virtuels, rien d'autre ne les
+    # borne : sans cette limite, les campagnes de capacité ont vu des centaines
+    # de dépôts simultanés vider le pool de connexions et affamer les workers.
+    # 50 : l'hypothèse de ~50 dépôts simultanés, et le pool de connexions du
+    # client S3 d'ingestion (50 par défaut dans le SDK).
+    max-concurrent-uploads: ${UPLOAD_MAX_CONCURRENT:50}
+    # Âge maximal du compte de fichiers en attente utilisé pour admettre un
+    # dépôt : une requête le relit au plus tous les 250 ms, les autres
+    # réutilisent la dernière valeur. Refuser ne coûte plus une requête SQL.
+    pending-count-max-age: 250ms
+    idempotency-ttl: 24h
+    # Durée maximale de réception du corps : un plancher, plus un temps par Mio
+    # annoncé. Le délai de lecture du connecteur ne mesure que le silence entre
+    # deux paquets : un client qui envoie au compte-gouttes le contourne et garde
+    # sa place sur le nœud indéfiniment. 8 s/Mio ≈ 1 Mbit/s, le débit montant le
+    # plus lent accepté (hypothèse) ; 500 Mio : 60 s + 500 × 8 s ≈ 68 min.
+    transfer-deadline:
+      minimum: 60s
+      per-mebibyte: 8s
+
+  # Retry-After des réponses de suivi (202 du dépôt, 200 et 304 du détail) tant
+  # que le fichier n'est pas terminal : 2 s, plus 0,05 s par Mio, au plus 30 s.
+  # Calé sur le débit mesuré (analyse ~20 Mo/s, puis copie de promotion) : un
+  # fichier de 500 Mo est consulté deux fois pendant son traitement, et non plus
+  # vingt. Le plancher est l'ancienne valeur fixe : aucun client n'est invité à
+  # interroger plus souvent qu'avant ; le plafond borne le retard d'un verdict.
+  # Chaque interrogation, même en 304, relit la ligne sur le pool de l'API.
+  polling:
+    minimum: 2s
+    per-mebibyte: 50ms
+    maximum: 30s
+
+  # Règle B-7, côté base : le délai de connexion du pool ne borne que l'attente
+  # d'une connexion libre. Sans ceux-ci, une base qui ne répond plus bloque le
+  # fil appelant indéfiniment (délai de lecture du pilote infini par défaut).
+  # Aucune requête du service n'est longue : 15 s est une panne, pas un cas.
+  database:
+    connect: 5s
+    statement: 15s
+    # Au-delà de « statement » : PostgreSQL annule d'abord la requête, et la
+    # connexion reste utilisable ; le pilote ne coupe que si le serveur se tait.
+    socket: 30s
+
+  storage:
+    endpoint: ${S3_ENDPOINT:http://localhost:8333}
+    region: ${S3_REGION:us-east-1}
+    quarantine-bucket: ${S3_QUARANTINE_BUCKET:quarantine}
+    servable-bucket: ${S3_SERVABLE_BUCKET:servable}
+    # Règle B-7 : connexion ET lecture, toutes deux explicites. La lecture est
+    # dimensionnée pour un objet de 500 Mo.
+    connect-timeout: 2s
+    read-timeout: 5m
+    # Trois identités, trois droits (infra/seaweedfs/s3-identities.json).
+    ingest:
+      access-key: ${S3_INGEST_KEY}
+      secret-key: ${S3_INGEST_SECRET}
+    worker:
+      access-key: ${S3_WORKER_KEY}
+      secret-key: ${S3_WORKER_SECRET}
+    delivery:
+      access-key: ${S3_DELIVERY_KEY}
+      secret-key: ${S3_DELIVERY_SECRET}
+
+  worker:
+    enabled: ${WORKER_ENABLED:true}
+    # Boucles d'analyse sur ce nœud, alignées sur les threads du moteur. Chaque
+    # boucle mène une analyse à la fois : ce nombre EST la borne des analyses
+    # simultanées. Les threads virtuels ne l'annulent pas — ils suppriment la
+    # limite d'un pool sur les tâches soumises, pas celle d'un nombre fixe de
+    # boucles séquentielles.
+    concurrency: ${WORKER_CONCURRENCY:4}
+    # Bail d'un fichier : un plancher, plus un temps par Mio. C'est le délai au
+    # bout duquel un fichier revient dans la file si son worker a disparu ou n'a
+    # pas pu écrire son résultat. 500 Mio : 30 s + 500 × 1,2 s ≈ 10,5 min,
+    # comme l'ancien bail fixe ; 2 Mio : 32 s au lieu de 10 min.
+    lease:
+      minimum: 30s
+      per-mebibyte: 1200ms
+    # La copie vérifiée prend plus longtemps que l'analyse : 500 Mio ≈ 15,5 min.
+    promotion-lease:
+      minimum: 30s
+      per-mebibyte: 1800ms
+    max-attempts: 5
+    backoff-base: 10s
+    backoff-max: 15m
+    poll-interval: 2s
+    # À l'arrêt : délai laissé aux analyses en cours avant de rendre leur bail.
+    drain-timeout: 20s
+
+  antivirus:
+    # http : moteur réel via son API. instant-clean : uniquement pour mesurer
+    # le plafond du code (stockage, SHA-256, base, promotion), jamais en service.
+    mode: ${ANTIVIRUS_MODE:http}
+    base-url: ${ANTIVIRUS_URL:http://localhost:9000}
+    connect-timeout: 2s
+    # Doit dépasser le temps d'analyse d'un fichier de 500 Mo : un client qui
+    # abandonne avant laisse le moteur travailler pour personne.
+    read-timeout: 10m
+    health-timeout: 2s
+    version-cache-ttl: 1m
+
+  maintenance:
+    # Les deux délais dépassent le dépôt le plus lent accepté (≈ 68 min, voir
+    # transfer-deadline), ce que le service vérifie au démarrage : un objet
+    # encore en cours de réception n'est pas un orphelin, et la clé
+    # d'idempotence d'un dépôt en cours n'est pas purgée.
+    orphan-age: 2h
+    sweep-batch: 500
+    abandoned-upload-after: 2h
+
+  # Authentification toujours exigée, sans réglage pour la couper (ADR-0014).
+  # Le navigateur a une session (cookie HttpOnly) ouverte par le service, client
+  # CONFIDENTIEL de Keycloak, et gardée par Spring Session ; un système tiers
+  # envoie un jeton d'accès, sans session. Dans les deux cas, le « sub »
+  # possède les fichiers.
+  security:
+    oidc:
+      # La valeur attendue du claim « iss » : l'adresse sous laquelle le
+      # NAVIGATEUR voit Keycloak…
+      issuer: ${OIDC_ISSUER:http://localhost:8081/realms/praxedo}
+      # …et celle sous laquelle le SERVICE lit ses clés. En conteneur, elles
+      # diffèrent (localhost:8081 / keycloak:8080) : les confondre fait refuser
+      # tous les jetons.
+      jwk-set-uri: ${OIDC_JWK_SET_URI:http://localhost:8081/realms/praxedo/protocol/openid-connect/certs}
+      # Un jeton d'accès émis pour une autre application est refusé.
+      audience: ${OIDC_AUDIENCE:praxedo-files-api}
+      connect-timeout: 2s
+      read-timeout: 5s
+      # Le service comme client confidentiel : identifiant + secret. Le secret
+      # vient toujours de l'environnement (règle B-5) ; s'il vaut celui du realm
+      # de développement, le service le signale au démarrage.
+      client:
+        client-id: ${OIDC_CLIENT_ID:praxedo-web}
+        client-secret: ${OIDC_CLIENT_SECRET}
+        # Vue du NAVIGATEUR : c'est lui qu'on y envoie.
+        authorization-uri: ${OIDC_AUTHORIZATION_URI:http://localhost:8081/realms/praxedo/protocol/openid-connect/auth}
+        # Vue du SERVICE : c'est lui qui l'appelle (code, rafraîchissement).
+        token-uri: ${OIDC_TOKEN_URI:http://localhost:8081/realms/praxedo/protocol/openid-connect/token}
+        # Vue du NAVIGATEUR : c'est lui qu'on y envoie pour fermer sa session
+        # Keycloak (déconnexion OpenID Connect).
+        logout-uri: ${OIDC_LOGOUT_URI:http://localhost:8081/realms/praxedo/protocol/openid-connect/logout}
+        # {baseUrl} : l'origine qu'a utilisée le navigateur (le proxy Vite en
+        # développement). Keycloak la compare à sa liste exacte.
+        redirect-uri: ${OIDC_REDIRECT_URI:{baseUrl}/api/v1/auth/callback}
+    cookies:
+      # Secure + préfixe __Host- : le cookie n'est jamais envoyé en clair, ni
+      # posé par un sous-domaine voisin. false uniquement en HTTP local.
+      secure: ${SESSION_COOKIE_SECURE:true}
+    # Keycloak reste l'autorité : la session est revalidée à l'échéance du jeton
+    # d'accès (5 min). S'il ne répond pas, elle reste servie sur son dernier
+    # verdict, au plus…
+    revalidation:
+      max-without-verdict: 30m
+      # …et il est réinterrogé à ce rythme, pas à chaque requête.
+      retry-delay: 30s
+
+  scheduling:
+    enabled: ${SCHEDULING_ENABLED:true}
+    sweep-interval: 10m
+    reaper-interval: 30s
+
+logging:
+  level:
+    com.praxedo.securefiles: ${LOG_LEVEL:INFO}
+
+---
+# Journaux structurés (JSON, format ECS) pour un collecteur de logs :
+# SPRING_PROFILES_ACTIVE=json-logs. L'identifiant de corrélation (requestId)
+# et le fileId du worker y figurent, portés par le MDC. En développement, le
+# format texte reste le plus lisible — d'où un profil plutôt qu'un défaut.
+spring:
+  config:
+    activate:
+      on-profile: json-logs
+logging:
+  structured:
+    format:
+      console: ecs
