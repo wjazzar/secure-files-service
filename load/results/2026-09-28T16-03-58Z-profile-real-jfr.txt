@@ -1,0 +1,224 @@
+## container-configuration
+
+
+Container Configuration
+-----------------------
+
+Container Type: cgroupv2
+
+CPU Slice Period: 100 ms
+
+CPU Quota: 100 ms
+
+CPU Shares: -1
+
+Effective CPU Count: 1
+
+Memory Soft Limit: 0 bytes
+
+Memory Limit: 1,0 GB
+
+Memory and Swap Limit: 2,0 GB
+
+Container Host Total Memory: 15,6 GB
+
+## gc-configuration
+
+
+GC Configuration
+----------------
+
+Young GC: DefNew
+
+Old GC: SerialOld
+
+Parallel GC Threads: 0
+
+Concurrent GC Threads: 0
+
+Dynamic GC Threads: true
+
+Concurrent Explicit GC: false
+
+Disable Explicit GC: false
+
+Pause Target: N/A
+
+GC Time Ratio: 99
+
+## container-cpu-throttling
+
+
+Container CPU Throttling
+------------------------
+
+CPU Elapsed Slices: 4?525
+
+CPU Throttled Slices: 2?359
+
+CPU Throttled Time: 2 m 35 s
+
+## cpu-load
+
+
+CPU Load Statistics
+-------------------
+
+JVM User (Minimum): 0,00%
+
+JVM User (Average): 2,04%
+
+JVM User (Maximum): 3,94%
+
+JVM System (Minimum): 0,00%
+
+JVM System (Average): 1,18%
+
+JVM System (Maximum): 2,12%
+
+Machine Total (Minimum): 0,00%
+
+Machine Total (Average): 15,98%
+
+Machine Total (Maximum): 56,42%
+
+## thread-cpu-load
+
+Indisponible : spawnSync jfr ENOBUFS
+
+## hot-methods
+
+
+                                                                                  Java Methods that Executes the Most
+
+Method                                                                                                                                                                                  Samples Percent
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ------- -------
+java.lang.String.hashCode()                                                                                                                                                                 194   5,73%
+java.util.HashMap.getNode(Object)                                                                                                                                                            97   2,86%
+java.util.HashMap.putVal(int, Object, Object, boolean, boolean)                                                                                                                              81   2,39%
+java.lang.AbstractStringBuilder.ensureCapacityInternal(int)                                                                                                                                  60   1,77%
+java.util.concurrent.ConcurrentHashMap.get(Object)                                                                                                                                           58   1,71%
+software.amazon.awssdk.utils.AttributeMap$DerivedValue.get(AttributeMap$LazyValueSource)                                                                                                     41   1,21%
+java.util.TreeMap.getEntry(Object)                                                                                                                                                           37   1,09%
+java.util.HashMap.putMapEntries(Map, boolean)                                                                                                                                                31   0,92%
+java.util.IdentityHashMap.get(Object)                                                                                                                                                        28   0,83%
+java.util.concurrent.locks.AbstractQueuedSynchronizer.signalNext(AbstractQueuedSynchronizer$Node)                                                                                            25   0,74%
+com.nimbusds.jose.util.Base64Codec.decode(String)                                                                                                                                            23   0,68%
+org.springframework.util.ObjectUtils.nullSafeEquals(Object, Object)                                                                                                                          22   0,65%
+software.amazon.awssdk.utils.AttributeMap.get(AttributeMap$Key)                                                                                                                              21   0,62%
+java.util.TreeMap.get(Object)                                                                                                                                                                21   0,62%
+ch.qos.logback.classic.LoggerContext.getTurboFilterChainDecision_0_3OrMore(Marker, Logger, Level, String, Object[], Throwable)                                                               20   0,59%
+java.lang.ThreadLocal$ThreadLocalMap.getEntry(ThreadLocal)                                                                                                                                   20   0,59%
+java.util.Collections$UnmodifiableCollection$1.hasNext()                                                                                                                                     18   0,53%
+java.math.MutableBigInteger.divideMagnitude(MutableBigInteger, MutableBigInteger, boolean)                                                                                                   17   0,50%
+java.lang.invoke.DirectMethodHandle.allocateInstance(Object)                                                                                                                                 17   0,50%
+java.util.ComparableTimSort.countRunAndMakeAscending(Object[], int, int)                                                                                                                     15   0,44%
+java.util.HashMap.removeNode(int, Object, Object, boolean, boolean)                                                                                                                          15   0,44%
+software.amazon.awssdk.core.io.SdkFilterInputStream.read(byte[], int, int)                                                                                                                   15   0,44%
+java.lang.Class.cast(Object)                                                                                                                                                                 15   0,44%
+java.lang.String.charAt(int)                                                                                                                                                                 14   0,41%
+java.util.Objects.equals(Object, Object)                                                                                                                                                     14   0,41%
+
+## socket-reads-by-host
+
+
+                                                                                          Socket Reads by Host
+
+Host                                                                                                                                                                                   Reads Total Read
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ------ ----------
+objectstore                                                                                                                                                                           10?404     7,2 MB
+postgres                                                                                                                                                                               5?951   796,0 kB
+                                                                                                                                                                                          19   148,9 kB
+
+## socket-writes-by-host
+
+
+                                                                                         Socket Writes by Host
+
+Host                                                                                                                                                                               Writes Total Written
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ------ -------------
+antivirus                                                                                                                                                                              84        1,3 MB
+objectstore                                                                                                                                                                           174        1,2 MB
+postgres                                                                                                                                                                               11        1,9 kB
+                                                                                                                                                                                        2        1,8 kB
+
+## contention-by-site
+
+
+                                                                                           Contention by Site
+
+StackTrace                                                                                                                                                                        Count    Avg.    Max.
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- ----- ------- -------
+sun.security.provider.SecureRandom.engineNextBytes(byte[])                                                                                                                            1 76,0 ms 76,0 ms
+java.lang.ClassLoader.loadClass(String, boolean)                                                                                                                                      2 73,7 ms 74,0 ms
+jdk.internal.net.http.Http1Response.lambda$readHeadersAsync$0(Http1Response$State)                                                                                                    1 74,0 ms 74,0 ms
+org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter.convert(Jwt)                                                                            1 68,7 ms 68,7 ms
+java.lang.ClassLoader.loadClass(String, boolean)                                                                                                                                      1 64,6 ms 64,6 ms
+java.lang.ClassLoader.loadClass(String, boolean)                                                                                                                                      1 64,3 ms 64,3 ms
+java.lang.ClassLoader.loadClass(String, boolean)                                                                                                                                      1 48,4 ms 48,4 ms
+java.lang.ClassLoader.loadClass(String, boolean)                                                                                                                                      1 20,9 ms 20,9 ms
+sun.nio.ch.EPollSelectorImpl.clearInterrupt()                                                                                                                                         1 13,3 ms 13,3 ms
+
+## pinned-threads
+
+
+No events found for 'Pinned Virtual Threads'.
+
+## gc-pauses
+
+
+GC Pauses
+---------
+
+Total Pause Time: 4,87 s
+
+Number of Pauses: 2?239
+
+Minimum Pause Time: 0,479 ms
+
+Median Pause Time: 1,54 ms
+
+Average Pause Time: 2,18 ms
+
+P90 Pause Time: 2,20 ms
+
+P95 Pause Time: 2,84 ms
+
+P99 Pause Time: 11,0 ms
+
+P99.9% Pause Time: 149 ms
+
+Maximum Pause Time: 149 ms
+
+## allocation-by-site
+
+
+                                                                                           Allocation by Site
+
+Method                                                                                                                                                                              Allocation Pressure
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- -------------------
+software.amazon.awssdk.http.auth.aws.internal.signer.chunkedencoding.ChunkedEncodedInputStream.getChunk(InputStream)                                                                             53,77%
+java.nio.HeapByteBuffer.<init>(int, int, MemorySegment)                                                                                                                                          10,90%
+java.io.InputStream.transferTo(OutputStream)                                                                                                                                                      2,20%
+java.io.BufferedInputStream.getBufIfOpen(boolean)                                                                                                                                                 1,67%
+java.util.Arrays.copyOf(char[], int)                                                                                                                                                              1,66%
+java.util.Arrays.copyOfRangeByte(byte[], int, int)                                                                                                                                                1,50%
+java.util.Arrays.copyOf(byte[], int)                                                                                                                                                              1,38%
+software.amazon.awssdk.checksums.SdkChecksum.update(ByteBuffer)                                                                                                                                   1,19%
+java.lang.AbstractStringBuilder.<init>(int)                                                                                                                                                       1,08%
+java.util.HashMap.newNode(int, Object, Object, HashMap$Node)                                                                                                                                      0,99%
+jdk.internal.vm.Continuation.doYield()                                                                                                                                                            0,96%
+java.lang.invoke.DirectMethodHandle.allocateInstance(Object)                                                                                                                                      0,67%
+java.lang.StringUTF16.compress(char[], int, int)                                                                                                                                                  0,62%
+java.lang.String.encodeUTF8(byte, byte[], boolean)                                                                                                                                                0,62%
+jdk.internal.misc.Unsafe.allocateUninitializedArray(Class, int)                                                                                                                                   0,59%
+java.util.HashMap.resize()                                                                                                                                                                        0,55%
+java.lang.StringBuilder.toString()                                                                                                                                                                0,51%
+org.postgresql.core.PGStream.receiveTupleV3()                                                                                                                                                     0,45%
+java.util.ArrayList.grow(int)                                                                                                                                                                     0,44%
+org.apache.hc.core5.util.CharArrayBuffer.<init>(int)                                                                                                                                              0,33%
+org.apache.hc.core5.http.io.entity.InputStreamEntity.writeTo(OutputStream)                                                                                                                        0,33%
+org.postgresql.core.Encoding.decode(byte[], int, int)                                                                                                                                             0,31%
+java.util.Collections.unmodifiableList(List)                                                                                                                                                      0,30%
+java.util.IdentityHashMap.init(int)                                                                                                                                                               0,30%
+java.util.ArrayList.iterator()                                                                                                                                                                    0,28%
