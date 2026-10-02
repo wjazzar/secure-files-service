@@ -1,0 +1,493 @@
+/*
+ * Skin of the file workspace: header, introduction, upload, list, detail panel.
+ *
+ * One property, one place. An element gets a property either from a utility
+ * in its JSX or from a rule in this file, never from both. Utilities keep
+ * structure and behavior (flex, grid, position, visibility, states); this
+ * file holds what the design adds: surfaces, borders, radii, the type scale.
+ * No text is set below 12px.
+ *
+ * A rule targets a `workspace-*` class set on the element itself, or the
+ * `data-slot` of a shadcn primitive inside a named block. Never a position
+ * in the DOM. The rules are unlayered on purpose: they must win over the
+ * utility classes the primitives carry.
+ */
+.workspace-shell {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(ellipse at 8% 22%, color-mix(in srgb, var(--primary) 5%, transparent), transparent 43%),
+    radial-gradient(ellipse at 90% 0%, color-mix(in srgb, var(--surface-blue) 7%, transparent), transparent 40%),
+    var(--background);
+}
+
+.workspace-shell::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 auto;
+  height: 700px;
+  pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--surface-blue) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--surface-blue) 4%, transparent) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: linear-gradient(transparent, black 25%, transparent);
+  content: '';
+}
+
+.workspace-header-inner,
+.workspace-content,
+.workspace-footer-inner {
+  width: min(100% - 96px, 1200px);
+  margin-inline: auto;
+}
+
+/* Header */
+.workspace-header {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--header) 85%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+.workspace-header-inner {
+  display: flex;
+  min-height: 88px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.workspace-brand {
+  gap: 20px;
+}
+.workspace-logo {
+  width: auto;
+  height: 28px;
+}
+.workspace-brand-caption {
+  font-size: 12px;
+  letter-spacing: 0.03em;
+}
+.workspace-header-actions {
+  gap: 16px;
+}
+.workspace-mock-badge {
+  font-size: 12px;
+  line-height: calc(1 / 0.75);
+}
+.workspace-user-menu {
+  gap: 10px;
+  border: 1px solid var(--border);
+  padding: 5px 10px 5px 5px;
+}
+.workspace-user-name {
+  font-size: 12px;
+  line-height: calc(1.25 / 0.875);
+}
+.workspace-user-login {
+  font-size: 12px;
+  line-height: calc(1 / 0.75);
+}
+
+/* Introduction */
+.workspace-content {
+  padding-top: 36px;
+}
+.workspace-intro {
+  gap: 24px;
+  padding-bottom: 4px;
+}
+.workspace-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  line-height: calc(1 / 0.75);
+  text-transform: uppercase;
+}
+.workspace-eyebrow::before {
+  width: 18px;
+  height: 1px;
+  background: currentColor;
+  content: '';
+}
+.workspace-title {
+  margin-top: 8px;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 1.2;
+}
+.workspace-lede {
+  max-width: 620px;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.workspace-pipeline {
+  gap: 6px;
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 6px 24px var(--surface-shadow);
+}
+.workspace-step {
+  gap: 7px;
+  font-size: 12px;
+  line-height: calc(1.25 / 0.875);
+}
+.workspace-step-icon {
+  width: 28px;
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--primary) 15%, var(--border));
+  border-radius: 8px;
+}
+.workspace-step-chevron {
+  width: 16px;
+  height: 16px;
+}
+
+/* Cards */
+.workspace-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: linear-gradient(145deg, var(--card), color-mix(in srgb, var(--card) 96%, var(--accent)));
+  box-shadow: 0 12px 40px var(--surface-shadow);
+}
+.workspace-card::before {
+  position: absolute;
+  inset: 0 18% auto;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 55%, transparent), transparent);
+  content: '';
+}
+.workspace-upload-card {
+  --card-spacing: 22px;
+}
+.workspace-card-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.5;
+}
+.workspace-card-description {
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+/* Upload */
+.workspace-dropzone {
+  gap: 18px;
+  border: 1px dashed var(--input);
+  border-radius: 14px;
+  padding: 28px 18px;
+  background: radial-gradient(
+    ellipse at top,
+    var(--accent),
+    color-mix(in srgb, var(--background) 45%, var(--card)) 85%
+  );
+}
+.workspace-dropzone[data-dragging] {
+  border-color: var(--ring);
+  background: var(--accent);
+}
+.workspace-dropzone-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+}
+.workspace-dropzone-halo {
+  border-radius: inherit;
+}
+.workspace-dropzone-title {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.workspace-dropzone-or {
+  font-size: 12px;
+  line-height: calc(1.25 / 0.875);
+}
+.workspace-pill {
+  gap: 5px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: calc(1 / 0.75);
+}
+
+.workspace-primary-action {
+  min-height: 42px;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  border-radius: 10px;
+  padding-inline: 18px;
+  background: linear-gradient(105deg, var(--primary), var(--surface-blue));
+  color: var(--primary-foreground);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--primary) 12%, transparent);
+  font-size: 12px;
+  font-weight: 600;
+  transition:
+    box-shadow 0.2s,
+    filter 0.2s;
+}
+.workspace-primary-action:hover:not(:disabled) {
+  filter: brightness(var(--hover-brightness));
+  box-shadow: 0 5px 22px color-mix(in srgb, var(--primary) 20%, transparent);
+}
+
+/* List */
+.workspace-files-heading {
+  align-items: center;
+  padding: 24px 22px 18px;
+}
+.workspace-search-input {
+  height: 40px;
+  border-radius: 10px;
+  background: var(--background);
+  font-size: 13px;
+}
+.workspace-search-input:focus-visible {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 18%, transparent);
+}
+
+.workspace-status-tabs {
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 5px;
+  background: color-mix(in srgb, var(--background) 65%, var(--card));
+}
+.workspace-status-tab {
+  min-height: 36px;
+  border: 1px solid transparent;
+  padding: 7px 11px;
+  font-size: 12px;
+  line-height: calc(1.25 / 0.875);
+}
+.workspace-status-tab[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--primary) 32%, var(--border));
+  background: var(--accent);
+  color: var(--accent-foreground);
+  box-shadow: 0 2px 8px var(--surface-shadow);
+}
+.workspace-status-tab[aria-pressed='true'] .workspace-status-count {
+  background: color-mix(in srgb, var(--primary) 12%, var(--card));
+}
+
+.workspace-table-header {
+  background: color-mix(in srgb, var(--background) 70%, var(--card));
+}
+.workspace-table-header th {
+  height: 44px;
+  font-size: 12px;
+  letter-spacing: 0.07em;
+  line-height: calc(1 / 0.75);
+}
+.workspace-table-body td {
+  font-size: 12px;
+}
+.workspace-file-row {
+  height: 72px;
+}
+.workspace-file-row:hover,
+.workspace-file-row[data-state='selected'] {
+  background: color-mix(in srgb, var(--accent) 65%, var(--card));
+}
+.workspace-file-name {
+  font-size: 13px;
+}
+.workspace-file-type {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: calc(1 / 0.75);
+}
+.workspace-table-badge {
+  min-height: 26px;
+  padding-inline: 9px;
+  font-size: 12px;
+}
+.workspace-download-action {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--card);
+  color: var(--primary);
+}
+.workspace-download-action:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.workspace-pagination {
+  padding-block: 4px;
+  font-size: 12px;
+  line-height: calc(1.25 / 0.875);
+}
+.workspace-pagination [data-slot='button'] {
+  border-radius: 8px;
+  background: var(--card);
+}
+.workspace-pagination [data-slot='select-trigger'] {
+  border-radius: 8px;
+}
+
+/* Detail panel */
+.workspace-detail {
+  border-left: 1px solid var(--border);
+  box-shadow: -16px 0 60px var(--surface-shadow);
+}
+.workspace-detail-header {
+  background: linear-gradient(135deg, var(--card), var(--accent));
+}
+.workspace-detail-title {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.workspace-detail-panel {
+  border-radius: 14px;
+}
+.workspace-detail-footer {
+  padding: 20px;
+}
+
+/* Footer */
+.workspace-footer {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 45%, transparent);
+}
+.workspace-footer-inner {
+  padding-block: 22px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.workspace-footer-note {
+  max-width: 580px;
+}
+
+@media (max-width: 1023px) {
+  .workspace-header-inner,
+  .workspace-content,
+  .workspace-footer-inner {
+    width: calc(100% - 48px);
+  }
+  .workspace-header-inner {
+    min-height: 80px;
+  }
+  .workspace-content {
+    padding-top: 28px;
+  }
+  .workspace-intro {
+    gap: 18px;
+  }
+  .workspace-title {
+    font-size: 30px;
+  }
+  .workspace-dropzone {
+    padding-block: 24px;
+  }
+}
+
+@media (max-width: 540px) {
+  .workspace-header-inner,
+  .workspace-content,
+  .workspace-footer-inner {
+    width: calc(100% - 32px);
+  }
+  .workspace-header-inner {
+    min-height: 76px;
+    gap: 8px;
+  }
+  .workspace-brand {
+    gap: 0;
+  }
+  .workspace-logo {
+    height: 25px;
+  }
+  .workspace-header-actions {
+    gap: 8px;
+  }
+  /* Icons only: the buttons keep their accessible names. */
+  .workspace-header .theme-toggle-label {
+    display: none;
+  }
+  .workspace-user-menu {
+    gap: 4px;
+    padding: 4px;
+  }
+  .workspace-user-chevron {
+    display: none;
+  }
+  .workspace-content {
+    padding-top: 24px;
+  }
+  .workspace-title {
+    font-size: 28px;
+  }
+  .workspace-lede {
+    font-size: 12px;
+  }
+  /* Three steps on one line at 12px: the order of the list says the sequence. */
+  .workspace-pipeline {
+    padding: 10px;
+  }
+  .workspace-step {
+    gap: 5px;
+  }
+  .workspace-step-icon {
+    width: 24px;
+    height: 24px;
+  }
+  .workspace-step-chevron {
+    display: none;
+  }
+  .workspace-card {
+    border-radius: 16px;
+  }
+  .workspace-upload-card {
+    --card-spacing: 18px;
+  }
+  .workspace-files-heading {
+    padding: 20px 18px 16px;
+  }
+  .workspace-search-input {
+    font-size: 16px;
+  }
+  .workspace-status-tabs {
+    width: 100%;
+  }
+  .workspace-status-tab {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding-inline: 8px;
+  }
+  .workspace-pagination {
+    padding-block: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-shell *,
+  .workspace-detail * {
+    transition: none !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .workspace-header {
+    background: var(--header);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@supports not (backdrop-filter: blur(20px)) {
+  .workspace-header {
+    background: var(--header);
+  }
+}

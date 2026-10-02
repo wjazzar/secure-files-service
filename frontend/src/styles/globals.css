@@ -1,0 +1,221 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Praxedo theme for shadcn/ui.
+ *
+ * Light and dark surfaces follow the approved login design. The original
+ * brand palette is retained for the logo; file states keep their semantic
+ * colors. Components use the variables below rather than literal colors.
+ *
+ * WCAG AA, measured on both themes: text pairs reach 4.5:1, input borders and
+ * focus rings 3:1. Any text on a solid status fill uses --solid-foreground.
+ *
+ * Red is reserved for danger (threat detected). The brand red #E91B31 only
+ * reaches 4.5:1 on white, so danger text uses #B3142A (6.9:1).
+ */
+
+@theme inline {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-header-foreground: var(--header-foreground);
+  --color-file-image: var(--file-image);
+  --color-file-image-bg: var(--file-image-bg);
+  --color-file-presentation: var(--file-presentation);
+  --color-file-presentation-bg: var(--file-presentation-bg);
+  --color-solid-foreground: var(--solid-foreground);
+
+  /* One foreground/background pair per file status (StatusBadge). */
+  --color-status-pending: var(--status-pending);
+  --color-status-pending-bg: var(--status-pending-bg);
+  --color-status-scanning: var(--status-scanning);
+  --color-status-scanning-bg: var(--status-scanning-bg);
+  --color-status-available: var(--status-available);
+  --color-status-available-bg: var(--status-available-bg);
+  --color-status-infected: var(--status-infected);
+  --color-status-infected-bg: var(--status-infected-bg);
+  --color-status-warning: var(--status-warning);
+  --color-status-warning-bg: var(--status-warning-bg);
+  --color-status-unknown: var(--status-unknown);
+  --color-status-unknown-bg: var(--status-unknown-bg);
+
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+:root {
+  color-scheme: light;
+
+  --background: #f3f7fb;
+  --foreground: #123042;
+  --card: #ffffff;
+  --card-foreground: var(--foreground);
+  --popover: #ffffff;
+  --popover-foreground: var(--foreground);
+
+  --primary: #077689; /* as text: 4.9:1 on the background, 4.6:1 on muted and accent */
+  --primary-foreground: #ffffff;
+  --secondary: #e8f0f6;
+  --secondary-foreground: var(--foreground);
+  --muted: #e8f0f6;
+  --muted-foreground: #506678;
+  --accent: #e2f3f5;
+  --accent-foreground: #176278;
+  --destructive: #b3142a;
+  --border: #d4e0e8;
+  --input: #788d9b;
+  --ring: var(--primary);
+
+  --brand-red: #e91b31; /* logo dot, decorative accents only */
+  --brand-sky: #33adff; /* brand accent: on dark backgrounds only (2.45:1 on white) */
+  --header: #f7fafc;
+  --header-foreground: var(--foreground);
+  --surface-blue: #247ba8;
+  --surface-shadow: #163b571a;
+  --solid-foreground: #ffffff; /* text or icon on a solid status fill */
+  --hover-brightness: 0.94; /* a hovered action moves away from its text color */
+  --file-image: #7152a3;
+  --file-image-bg: #f0eafa;
+  --file-presentation: #9a531e;
+  --file-presentation-bg: #fff0e2;
+
+  --status-pending: #4a5a6e;
+  --status-pending-bg: #eef1f5;
+  --status-scanning: #0a5a8c;
+  --status-scanning-bg: #d6efff;
+  --status-available: #146c43;
+  --status-available-bg: #e4f4eb;
+  --status-infected: #b3142a;
+  --status-infected-bg: #fdedef;
+  --status-warning: #8a5300;
+  --status-warning-bg: #fff1d6;
+  --status-unknown: #566277;
+  --status-unknown-bg: #eef1f5;
+
+  --radius: 0.625rem;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --background: #070f1a;
+  --foreground: #edf5fc;
+  --card: #0d1b2a;
+  --card-foreground: var(--foreground);
+  --popover: #0d1b2a;
+  --popover-foreground: var(--foreground);
+  --primary: #54e5d2;
+  --primary-foreground: #06212a;
+  --secondary: #192c3c;
+  --secondary-foreground: var(--foreground);
+  --muted: #192c3c;
+  --muted-foreground: #a5b6c8;
+  --accent: #193847;
+  --accent-foreground: #a9fff1;
+  --destructive: #ff9cab;
+  --border: #284052;
+  --input: #617889;
+  --header: #091522;
+  --surface-blue: #70bfff;
+  --surface-shadow: #02070d80;
+  --solid-foreground: #06212a;
+  --hover-brightness: 1.08;
+  --file-image: #d4c1ff;
+  --file-image-bg: #302440;
+  --file-presentation: #ffc494;
+  --file-presentation-bg: #402a21;
+  --status-pending: #c5d1dd;
+  --status-pending-bg: #273749;
+  --status-scanning: #a4dcff;
+  --status-scanning-bg: #173a50;
+  --status-available: #a0e8bc;
+  --status-available-bg: #153e30;
+  --status-infected: #ffb2bd;
+  --status-infected-bg: #482630;
+  --status-warning: #ffdc9c;
+  --status-warning-bg: #46351b;
+  --status-unknown: #adbdcc;
+  --status-unknown-bg: #273749;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 3px;
+  background: var(--card);
+  color: var(--card-foreground);
+}
+
+.theme-toggle .theme-toggle-option {
+  height: 30px;
+  gap: 6px;
+  border-radius: 7px;
+  padding-inline: 9px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.theme-toggle .theme-toggle-option svg {
+  width: 13px;
+  height: 13px;
+}
+
+.theme-toggle .theme-toggle-option[aria-pressed='true'] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.theme-toggle .theme-toggle-option:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+@media (max-width: 540px) {
+  .theme-toggle .theme-toggle-option {
+    padding-inline: 8px;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+}
