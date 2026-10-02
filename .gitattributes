@@ -1,0 +1,14 @@
+# Normalisation des fins de ligne : le dépôt est écrit sous Windows, les
+# images se construisent sous Linux. Sans cela, le wrapper Maven et les scripts
+# arrivent en CRLF dans le conteneur et le shell répond « bad interpreter ».
+* text=auto
+
+backend/mvnw text eol=lf
+*.sh          text eol=lf
+*.cmd         text eol=crlf
+*.bat         text eol=crlf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.jar binary

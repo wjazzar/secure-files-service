@@ -1,0 +1,38 @@
+# Java / Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+
+# Node / front-end
+node_modules/
+dist/
+.vite/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Outillage local
+.claude/settings.local.json
+starter.zip
+
+# Secrets et variables locales : jamais dans le dépôt (règle B-5)
+.env
+.env.*
+!.env.example
+# Modes Vite du front : de la configuration, aucun secret (frontend/src/config/env.ts)
+!frontend/.env.mock
+!frontend/.env.session
+*.pem
+*.key
+
+# Worktrees des sous-agents (Claude Code)
+.claude/worktrees/
+
+# Enregistrements JFR des campagnes de capacité : des dizaines de Mo chacun.
+# Leurs vues texte (*-jfr.txt) sont conservées, elles suffisent aux preuves.
+load/results/*.jfr
+# Journaux des nœuds pendant les campagnes : plusieurs Mo chacun.
+load/results/*.log
