@@ -1,0 +1,22 @@
+# Prometheus — collecte les métriques du service (Actuator, /actuator/prometheus).
+#
+# Toutes les 5 s : pendant un essai de charge, une courbe à 15 s lisse les pics
+# que l'on cherche justement à voir.
+#
+# La cible est backend:8091 : le port de management du service en conteneur
+# (profil « app »), joint par le réseau de compose — jamais le port de l'API
+# (audit S-08). Les ports n'étant publiés que sur 127.0.0.1 (audit S-09), un
+# conteneur ne peut plus joindre le poste par host.docker.internal sous Linux :
+# le service lancé depuis l'IDE n'est donc pas collecté ; ses métriques se
+# lisent directement sur http://localhost:8091/actuator/prometheus.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: praxedo-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["backend:8091"]
+        labels:
+          node: service-1

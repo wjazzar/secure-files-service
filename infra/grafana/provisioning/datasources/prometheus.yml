@@ -1,0 +1,14 @@
+# Source de données provisionnée : rien à configurer à la main dans Grafana.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # L'intervalle de collecte : les rate() de Grafana s'y alignent.
+      timeInterval: 5s

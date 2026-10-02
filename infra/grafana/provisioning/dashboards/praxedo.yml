@@ -1,0 +1,12 @@
+# Tableaux de bord provisionnés depuis infra/grafana/dashboards : versionnés
+# avec le code, présents dès le premier démarrage.
+apiVersion: 1
+
+providers:
+  - name: praxedo
+    folder: Praxedo
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
