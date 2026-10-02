@@ -1,0 +1,448 @@
+# Praxedo — fichiers sécurisés : environnement de développement local
+#
+# Quatre composants d'infrastructure :
+#   postgres    base de métadonnées + base de Keycloak
+#   objectstore stockage objet compatible S3 (SeaweedFS)
+#   keycloak    fournisseur d'identité (authentification v2, active par défaut)
+#   antivirus   moteur d'analyse, exposé par une API HTTP
+# la supervision (prometheus, grafana), le service lui-même (backend) dans le
+# profil « app », et un essai de charge (k6) dans le profil « load ».
+#
+# Démarrage :  docker compose up -d                        infrastructure + supervision
+#              docker compose --profile app up -d --build  … + service
+#              docker compose --profile load run --rm k6   essai de charge (load/README.md)
+# Vérification : voir infra/README.md
+#
+# ⚠️ Tous les identifiants de ce fichier sont des identifiants de
+# DÉVELOPPEMENT LOCAL. Ils ne doivent jamais être utilisés ailleurs.
+#
+# Tous les ports sont publiés sur 127.0.0.1 seulement (audit S-09) : sur un
+# réseau partagé (Wi-Fi, démonstration), personne d'autre que le poste
+# n'atteint la base, le stockage, Keycloak ou l'antivirus.
+
+name: praxedo
+
+services:
+
+  # ────────────────────────────────────────────────────────────────────
+  # PostgreSQL — métadonnées applicatives + base de Keycloak
+  # Une seule instance, deux bases : en production elles seraient séparées.
+  # ────────────────────────────────────────────────────────────────────
+  postgres:
+    # Épinglée : version exacte et empreinte (rapport docs/33).
+    image: postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    container_name: praxedo-postgres
+    # Diagnostics, coût négligeable : ce que la base attend quand elle ralentit.
+    # Lors des campagnes à trois nœuds (docs/capacity-planning), toutes les
+    # connexions de tous les nœuds se sont figées 17 s en même temps, sans que
+    # la base consomme de processeur : verrou ou disque, il faut le lire ici.
+    #   log_lock_waits             : toute attente de verrou > deadlock_timeout (1 s)
+    #   log_min_duration_statement : toute instruction > 1 s, avec son texte
+    #   log_autovacuum_min_duration: chaque passage d'autovacuum (il verrouille en fin de table)
+    #   track_io_timing / track_wal_io_timing : temps d'écriture et de fsync du disque
+    #                                (pg_stat_io, pg_stat_wal), relus par load/pg-activity.mjs
+    command:
+      - postgres
+      - -c
+      - log_lock_waits=on
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - log_autovacuum_min_duration=0
+      - -c
+      - track_io_timing=on
+      - -c
+      - track_wal_io_timing=on
+    environment:
+      # Superutilisateur d'ADMINISTRATION seulement (init, console, scripts) :
+      # ni le service ni Keycloak ne s'en servent (audit S-03).
+      POSTGRES_USER: ${POSTGRES_USER:-praxedo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-praxedo}
+      POSTGRES_DB: ${POSTGRES_DB:-praxedo}
+      # Un rôle par usage, créés par infra/postgres/initdb au premier démarrage :
+      # praxedo_owner (Flyway), praxedo_app (le service), keycloak (sa base).
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:-praxedo-owner-local}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:-praxedo-app-local}
+      KEYCLOAK_DB: ${KEYCLOAK_DB:-keycloak}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak-local}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-praxedo} -d ${POSTGRES_DB:-praxedo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────────────
+  # Stockage objet compatible S3 — SeaweedFS
+  #
+  # MinIO n'est pas retenu : son dépôt communautaire a été archivé le
+  # 25 avril 2026 et n'est plus distribué qu'en source.
+  # LocalStack non plus : son édition communautaire n'applique pas les
+  # politiques IAM, or c'est précisément ce dont dépend l'isolation entre
+  # la quarantaine et la zone servable.
+  #
+  # Trois jeux d'identifiants aux droits distincts (infra/seaweedfs/s3-identities.json) :
+  #   praxedo-ingest    écriture sur quarantine uniquement
+  #   praxedo-worker    lecture/écriture sur les deux zones
+  #   praxedo-delivery  LECTURE SEULE sur servable — aucun accès à la quarantaine
+  #
+  # ⚠️ Version 4.47 épinglée par digest, et pas la 3.97 d'origine : mesuré, une
+  # identité en lecture seule ne pouvait RIEN lire en 3.97 (tout GET refusé
+  # sans le droit Write sur la zone). Il aurait fallu donner Write:servable au
+  # rôle de livraison — donc la possibilité d'écraser un fichier validé. La 4.47
+  # applique Read correctement ; un test le vérifie à chaque construction.
+  #
+  # Capacité : volumes de 2 Go, 100 au plus (200 Go). À 20, les campagnes de
+  # capacité remplissaient le stockage après ~25 000 fichiers : chaque zone
+  # (quarantaine, servable, défaut) prend ses volumes par lots, et un objet
+  # supprimé occupe sa place jusqu'au compactage. La fin de chaque campagne
+  # mesurait alors un stockage plein (500), pas le service.
+  # ────────────────────────────────────────────────────────────────────
+  objectstore:
+    image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+    container_name: praxedo-objectstore
+    command: >
+      server
+      -dir=/data
+      -master.volumeSizeLimitMB=2048
+      -volume.max=${S3_VOLUME_MAX:-100}
+      -s3
+      -s3.port=8333
+      -s3.config=/etc/seaweedfs/s3-identities.json
+    ports:
+      - "127.0.0.1:${S3_PORT:-8333}:8333"     # API S3
+      - "127.0.0.1:${S3_UI_PORT:-19333}:9333" # console d'administration (debug) ; 9333 est souvent réservé par Windows
+    volumes:
+      - objectstore-data:/data
+      - ./infra/seaweedfs/s3-identities.json:/etc/seaweedfs/s3-identities.json:ro
+    healthcheck:
+      # 127.0.0.1 et non localhost : dans cette image, localhost résout en ::1,
+      # et SeaweedFS 4.47 n'écoute qu'en IPv4 — le contrôle échouait à jamais.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────────────
+  # Création des deux zones de stockage (conteneur éphémère)
+  # ────────────────────────────────────────────────────────────────────
+  objectstore-init:
+    image: amazon/aws-cli:2.32.9@sha256:734684f3fc98bbac0e7796c34f44c375c01f05febac52a10649a55eef1e96c24
+    container_name: praxedo-objectstore-init
+    depends_on:
+      objectstore:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ADMIN_KEY:-praxedo-admin}
+      AWS_SECRET_ACCESS_KEY: ${S3_ADMIN_SECRET:-praxedo-admin-secret}
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for bucket in quarantine servable; do
+          aws --endpoint-url http://objectstore:8333 s3api head-bucket --bucket "$$bucket" 2>/dev/null \
+            || aws --endpoint-url http://objectstore:8333 s3api create-bucket --bucket "$$bucket"
+          echo "zone prete : $$bucket"
+        done
+    restart: "no"
+
+  # ────────────────────────────────────────────────────────────────────
+  # Keycloak — fournisseur d'identité (OpenID Connect), authentification v2
+  #
+  # Mode start-dev : HTTP en clair, import du realm au démarrage.
+  # Réservé au développement local.
+  #
+  # Le realm ne définit AUCUN rôle : le contrat cloisonne par propriétaire
+  # (le `sub`), pas par permission. Deux clients confidentiels (ADR-0012) :
+  #   praxedo-web          le service, pour la connexion du navigateur (code
+  #                        d'autorisation + PKCE, secret client) — le navigateur
+  #                        ne reçoit qu'un cookie HttpOnly, jamais un jeton.
+  #                        Jetons de rafraîchissement sans rotation : plusieurs
+  #                        nœuds peuvent renouveler la même session sans se
+  #                        déconnecter l'un l'autre (ADR-0012)
+  #   praxedo-integration  un système tiers de démonstration (client credentials)
+  # Leurs secrets sont injectés à l'import (variables du realm-praxedo.json).
+  #
+  # ⚠️ L'import ne s'applique qu'à un realm absent : après une modification du
+  # realm, « docker compose down -v » (ou supprimer le realm dans la console).
+  # ────────────────────────────────────────────────────────────────────
+  keycloak:
+    # Image officielle, publiée aussi sur Docker Hub ; 26.4.7 est le dernier
+    # correctif de la ligne 26.4. Épinglée par empreinte (rapport docs/33).
+    image: keycloak/keycloak:26.4.7@sha256:9409c59bdfb65dbffa20b11e6f18b8abb9281d480c7ca402f51ed3d5977e6007
+    container_name: praxedo-keycloak
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB:-keycloak}
+      # Son propre rôle, propriétaire de sa seule base.
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak-local}
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      # Une seule adresse publique, celle du NAVIGATEUR : l'émetteur (« iss »)
+      # des jetons est toujours celle-ci, même quand le service appelle Keycloak
+      # par le réseau Docker (keycloak:8080). Sans cela, un jeton obtenu par le
+      # service porterait un autre émetteur que celui qu'il attend.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8081}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      # Secrets des clients confidentiels, lus par l'import du realm.
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-praxedo-local-web-secret-do-not-reuse}
+      PRAXEDO_INTEGRATION_SECRET: ${PRAXEDO_INTEGRATION_SECRET:-praxedo-local-integration-secret-do-not-reuse}
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8081}:8080"
+      - "127.0.0.1:${KEYCLOAK_MGMT_PORT:-9001}:9000"  # /health/ready, /metrics
+    volumes:
+      - ./infra/keycloak/realm-praxedo.json:/opt/keycloak/data/import/realm-praxedo.json:ro
+    healthcheck:
+      # L'image Keycloak ne contient ni curl ni wget : on interroge le port
+      # de management directement depuis le shell.
+      test:
+        - CMD-SHELL
+        - >
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          cat <&3 | grep -q '"status": "UP"'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────────────
+  # Antivirus — ClamAV exposé par une API HTTP (ajilaag/clamav-rest)
+  #
+  # L'énoncé impose de « déléguer l'analyse à un antivirus disponible via une
+  # API » : c'est ici une API HTTP REST, servie par un conteneur distinct.
+  #
+  #   POST /scanHandlerBody   corps brut, RELAYÉ EN FLUX vers le moteur
+  #                           200 sain · 406 menace · 412/413 non analysable
+  #   GET  /version           moteur et version des signatures (tracés au verdict)
+  #   GET  /metrics           métriques Prometheus
+  #
+  # ⚠️ Image DÉRIVÉE (infra/antivirus/Dockerfile) : l'image amont ne règle pas
+  # AlertExceedsMax, sans quoi une limite atteinte peut remonter comme une
+  # analyse propre, et elle ajoute une garde de démarrage sur l'ordre des
+  # limites. Les limites de taille, elles, sont pilotées ci-dessous — elles
+  # font partie de la garantie du service, donc elles sont versionnées.
+  #
+  # ⚠️ Premier démarrage long : téléchargement et chargement des signatures.
+  # Compter 1 à 2 Go de RAM pour ce conteneur.
+  # ────────────────────────────────────────────────────────────────────
+  antivirus:
+    build:
+      context: ./infra/antivirus
+    image: praxedo-antivirus:local
+    container_name: praxedo-antivirus
+    environment:
+      # Volume cumulé APRÈS décompression : protège des bombes de décompression.
+      # Doit rester ≥ à la taille acceptée par le service (500 Mo).
+      MAX_SCAN_SIZE: 1024M
+      # ⚠️ STRICTEMENT SUPÉRIEUR à MAX_SCAN_SIZE — mesuré le 27/09 (B-008) :
+      # à 512M, une entrée d'archive de 600 Mo était tronquée SANS alerte et
+      # l'archive déclarée saine. Au-dessus de MAX_SCAN_SIZE, c'est la limite
+      # de volume qui cède la première, et elle alerte (→ non analysable).
+      # L'image refuse de démarrer si cette relation est violée.
+      # (Règle aussi StreamMaxLength : le service plafonne déjà à 500 Mo.)
+      MAX_FILE_SIZE: 2000M
+      MAX_RECURSION: 16
+      MAX_FILES: 10000
+      SIGNATURE_CHECKS: 2
+    ports:
+      - "127.0.0.1:${ANTIVIRUS_PORT:-9000}:9000"
+    volumes:
+      - antivirus-db:/clamav/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 240s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────────────
+  # Le service lui-même — profil « app », pour ne pas gêner le développement
+  #
+  #   docker compose --profile app up -d --build     tout, en une commande
+  #   docker compose up -d                           l'infrastructure seule,
+  #                                                  le service lancé par ./mvnw
+  #
+  # Il n'attend PAS que l'antivirus soit prêt : dépôts, consultation et
+  # téléchargements fonctionnent sans lui, les fichiers attendent dans la file
+  # (le portillon de santé du worker ne consomme aucune tentative). C'est la
+  # résilience annoncée, rendue visible dès le premier démarrage.
+  # ────────────────────────────────────────────────────────────────────
+  backend:
+    profiles: ["app"]
+    build:
+      context: ./backend
+    image: praxedo-backend:local
+    container_name: praxedo-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      objectstore-init:
+        condition: service_completed_successfully
+      antivirus:
+        condition: service_started
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-praxedo}
+      # Deux rôles : l'exécution ne lit et n'écrit que des lignes, la migration
+      # possède le schéma (audit S-03). Aucun identifiant n'a de valeur par
+      # défaut dans le service (audit S-02) : tout est fourni ici.
+      DB_USERNAME: praxedo_app
+      DB_PASSWORD: ${DB_APP_PASSWORD:-praxedo-app-local}
+      DB_OWNER_USERNAME: praxedo_owner
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:-praxedo-owner-local}
+      S3_ENDPOINT: http://objectstore:8333
+      # Les identités de infra/seaweedfs/s3-identities.json.
+      S3_INGEST_KEY: praxedo-ingest
+      S3_INGEST_SECRET: praxedo-ingest-secret
+      S3_WORKER_KEY: praxedo-worker
+      S3_WORKER_SECRET: praxedo-worker-secret
+      S3_DELIVERY_KEY: praxedo-delivery
+      S3_DELIVERY_SECRET: praxedo-delivery-secret
+      ANTIVIRUS_URL: http://antivirus:9000
+      ANTIVIRUS_MODE: ${ANTIVIRUS_MODE:-http}
+      # Le profil capacity est requis en plus de ANTIVIRUS_MODE=instant-clean :
+      # une variable isolée ne peut pas désactiver accidentellement l'antivirus.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      # Authentification toujours exigée, aucune variable ne la coupe (ADR-0014) :
+      # session du navigateur par cookie HttpOnly (le service est le client
+      # confidentiel praxedo-web ; la session vit dans PostgreSQL, par Spring
+      # Session), ou jeton Bearer pour un système tiers. Adresses vues du
+      # NAVIGATEUR (émetteur, connexion, déconnexion) et vues du CONTENEUR
+      # (clés, jetons) : elles diffèrent, c'est voulu.
+      OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8081}/realms/praxedo
+      OIDC_JWK_SET_URI: http://keycloak:8080/realms/praxedo/protocol/openid-connect/certs
+      OIDC_AUTHORIZATION_URI: http://localhost:${KEYCLOAK_PORT:-8081}/realms/praxedo/protocol/openid-connect/auth
+      OIDC_TOKEN_URI: http://keycloak:8080/realms/praxedo/protocol/openid-connect/token
+      OIDC_LOGOUT_URI: http://localhost:${KEYCLOAK_PORT:-8081}/realms/praxedo/protocol/openid-connect/logout
+      OIDC_CLIENT_ID: praxedo-web
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-praxedo-local-web-secret-do-not-reuse}
+      # Cookies Secure + __Host- : acceptés par Chrome et Firefox même en HTTP sur
+      # localhost / 127.0.0.1. false seulement pour un navigateur qui les refuse.
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      # Vide par défaut. Les campagnes de capacité y placent l'enregistrement
+      # JFR (load/run-capacity.mjs, JFR=true) ; la JVM le lit d'elle-même.
+      JAVA_TOOL_OPTIONS: ${BACKEND_JAVA_TOOL_OPTIONS:-}
+      # Pool de connexions à la base, par nœud (défaut du service : 10).
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+    # Un nœud de référence, bridé : 1 processeur, 2 Go. Sans limite, on mesure
+    # le poste de développement ; avec, le tableau de bord Grafana dit ce que
+    # CE gabarit tient (débit, retard) — de quoi dimensionner les machines
+    # (docs/31 §4, load/README.md). La JVM voit la limite : tas = 60 % de 2 Go
+    # (backend/Dockerfile).
+    cpus: ${BACKEND_CPUS:-1.0}
+    mem_limit: ${BACKEND_MEMORY:-2g}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
+      # L'actuator, sur son propre port (audit S-08) : métriques et sondes.
+      - "127.0.0.1:${BACKEND_MANAGEMENT_PORT:-8091}:8091"
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────────────
+  # Supervision — Prometheus collecte, Grafana affiche
+  #
+  # Prometheus lit /actuator/prometheus toutes les 5 s, sur le port de
+  # management du conteneur (backend:8091), par le réseau de compose.
+  # Grafana démarre avec sa source de données et le tableau de bord
+  # « Praxedo — capacité du service » (retard, débit, ressources du nœud),
+  # tous deux versionnés dans infra/grafana. Consultation sans compte ;
+  # admin / admin pour modifier.
+  # ────────────────────────────────────────────────────────────────────
+  prometheus:
+    # Dernier correctif de la ligne LTS 3.5 : plus aucune faille critique (docs/33).
+    image: prom/prometheus:v3.5.5@sha256:332c2f43e7e389d74d3893b55bb02fbbd684208e681eeb604641d5d769c0fe2a
+    container_name: praxedo-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  grafana:
+    # Dernier correctif de la ligne 12.1 : 14 failles critiques ramenées à 5 (docs/33).
+    image: grafana/grafana:12.1.10@sha256:fe04e78ee9da4338d742cffce6caca08aa559f222e9cf53fd13beefe1cbafc4c
+    container_name: praxedo-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_LANGUAGE: fr-FR
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/praxedo-capacite.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────────────
+  # Essai de charge — profil « load », lancé à la demande (load/README.md)
+  #
+  #   docker compose --profile load run --rm k6
+  #
+  # Dépose des fichiers à débit croissant, en système tiers (jeton Bearer du
+  # client praxedo-integration), contre le service en conteneur — bridé à
+  # 1 CPU et 2 Go. Le tableau de bord Grafana montre où le retard décroche.
+  # ────────────────────────────────────────────────────────────────────
+  k6:
+    profiles: ["load"]
+    image: grafana/k6:1.2.3@sha256:4f82892217f3110cb233e2b2622bcc97fabc70f14bd241fbfbfe7305105c68aa
+    container_name: praxedo-k6
+    command: run /load/k6/capacity.js
+    environment:
+      API: http://backend:8080
+      KEYCLOAK: http://keycloak:8080
+      PRAXEDO_INTEGRATION_SECRET: ${PRAXEDO_INTEGRATION_SECRET:-praxedo-local-integration-secret-do-not-reuse}
+      # Paliers de débit (fichiers/s) et durée de chacun ; voir load/k6/capacity.js.
+      RATES: ${LOAD_RATES:-1,2,4,8,12}
+      STEP: ${LOAD_STEP:-90s}
+      WARMUP_RATE: ${LOAD_WARMUP_RATE:-20}
+      WARMUP: ${LOAD_WARMUP:-30s}
+    volumes:
+      - ./load:/load
+    user: root
+
+volumes:
+  postgres-data:
+  objectstore-data:
+  antivirus-db:
+  prometheus-data:
+  grafana-data:

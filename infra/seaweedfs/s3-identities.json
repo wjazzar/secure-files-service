@@ -1,0 +1,60 @@
+{
+  "identities": [
+    {
+      "name": "praxedo-admin",
+      "credentials": [
+        {
+          "accessKey": "praxedo-admin",
+          "secretKey": "praxedo-admin-secret"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write",
+        "List",
+        "Tagging"
+      ]
+    },
+    {
+      "name": "praxedo-ingest",
+      "credentials": [
+        {
+          "accessKey": "praxedo-ingest",
+          "secretKey": "praxedo-ingest-secret"
+        }
+      ],
+      "actions": [
+        "Write:quarantine"
+      ]
+    },
+    {
+      "name": "praxedo-worker",
+      "credentials": [
+        {
+          "accessKey": "praxedo-worker",
+          "secretKey": "praxedo-worker-secret"
+        }
+      ],
+      "actions": [
+        "Read:quarantine",
+        "Write:quarantine",
+        "List:quarantine",
+        "Write:servable"
+      ]
+    },
+    {
+      "name": "praxedo-delivery",
+      "credentials": [
+        {
+          "accessKey": "praxedo-delivery",
+          "secretKey": "praxedo-delivery-secret"
+        }
+      ],
+      "actions": [
+        "Read:servable",
+        "List:servable"
+      ]
+    }
+  ]
+}

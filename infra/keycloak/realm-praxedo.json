@@ -1,0 +1,155 @@
+{
+  "realm": "praxedo",
+  "displayName": "Praxedo — fichiers sécurisés",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "revokeRefreshToken": false,
+  "clients": [
+    {
+      "clientId": "praxedo-web",
+      "name": "Praxedo — connexion du navigateur",
+      "description": "Client CONFIDENTIEL : le service échange le code avec son secret et garde les jetons dans la session (Spring Session, PostgreSQL). Le navigateur ne reçoit qu'un cookie HttpOnly. Voir docs/adr/0012.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "http://127.0.0.1:5173/api/v1/auth/callback",
+        "http://localhost:5173/api/v1/auth/callback",
+        "http://localhost:8080/api/v1/auth/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "use.refresh.tokens": "true",
+        "post.logout.redirect.uris": "http://127.0.0.1:5173/login?signed-out##http://localhost:5173/login?signed-out##http://localhost:8080/login?signed-out"
+      }
+    },
+    {
+      "clientId": "praxedo-integration",
+      "name": "Praxedo — système tiers de démonstration",
+      "description": "Client confidentiel machine à machine (client credentials) : appelle l'API avec un jeton Bearer. Son compte de service possède ses propres fichiers.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${PRAXEDO_INTEGRATION_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "audience-praxedo-files-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "praxedo-files-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "praxedo-files-api",
+      "name": "Praxedo — service de fichiers",
+      "description": "Ressource protégée : ne reçoit que des jetons, n'en demande jamais",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "id": "d6286449-3510-4612-9c5c-888500ce5999",
+      "username": "sylvain.rivollet",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Sylvain",
+      "lastName": "Rivollet",
+      "email": "srivollet@example.test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ],
+      "requiredActions": []
+    },
+    {
+      "id": "8e4c6081-ef60-437a-ac3f-815a0064f558",
+      "username": "juliette.coudyser",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Juliette",
+      "lastName": "Coudyser",
+      "email": "juliette.Coudyser@example.test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ],
+      "requiredActions": []
+    },
+    {
+      "id": "d783027c-4593-49fc-af85-c652d47f684c",
+      "username": "nathan.martin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Nathan",
+      "lastName": "Martin",
+      "email": "nathan.martin@example.test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ],
+      "requiredActions": []
+    },
+    {
+      "id": "d783027c-4593-49fc-af85-cab2d47f684c",
+      "username": "wessim.jazzar",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Wessim",
+      "lastName": "Jazzar",
+      "email": "wessim11@gmail.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ],
+      "requiredActions": []
+    }
+  ]
+}
