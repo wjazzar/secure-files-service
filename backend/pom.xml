@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Praxedo Secure Files — un seul module.
+
+  Le découpage en couches est porté par les PAQUETS, pas par des modules Maven :
+
+      com.praxedo.securefiles.domain          l'automate, les règles, les objets valeur
+      com.praxedo.securefiles.application     les cas d'usage et les PORTS
+      com.praxedo.securefiles.infrastructure  les ADAPTATEURS (web, SQL, stockage, antivirus)
+      com.praxedo.securefiles.config          la composition Spring
+
+  La frontière reste vérifiée par le build : LayeringRulesTest (ArchUnit) fait
+  échouer la construction si une dépendance remonte, ou si le domaine touche à
+  Spring, Jakarta, JDBC ou au SDK AWS. C'est ce test qui remplace la séparation
+  physique en modules — il doit donc rester strict.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.1</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.praxedo</groupId>
+  <artifactId>securefiles</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+
+  <name>Praxedo Secure Files</name>
+  <description>Secure file service: no content is ever served before an antivirus has cleared it.</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <!-- Versions non gérées par le BOM de Spring Boot. Chacune est épinglée :
+         une version flottante, c'est une construction qui change sans commit. -->
+    <archunit.version>1.5.1</archunit.version>
+    <awssdk.version>2.55.6</awssdk.version>
+    <testcontainers.version>2.0.5</testcontainers.version>
+    <wiremock.version>3.13.2</wiremock.version>
+    <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
+
+    <!-- Correctifs de sécurité au-dessus du BOM de Spring Boot 4.1.1, dernière
+         version stable (4.2 n'existe qu'en milestones). Même ligne, correctif
+         seulement : rapport docs/33 (Trivy, 01/10).
+         - Tomcat 11.0.24 : trois failles critiques (CVE-2026-65182, -65905,
+           -68525), corrigées en 11.0.25.
+         - Jackson 3.1.5 : cinq failles hautes, dont deux de déni de service sur
+           l'analyse JSON, corrigées en 3.1.7.
+         À retirer dès qu'un Spring Boot 4.1.x les embarque. -->
+    <tomcat.version>11.0.26</tomcat.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Spring Boot 4.1 n'aligne plus les modules Testcontainers : leur
+           version est donc la nôtre. Testcontainers 2.x a renommé ses artefacts
+           (testcontainers-postgresql) et ses paquets. -->
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>${awssdk.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- MVC + threads virtuels, pas WebFlux. `-web` est déprécié en Boot 4.1. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
+    </dependency>
+    <!-- JPA pour tout ce qui se lit : par identifiant, liste paginée, recherche,
+         compteurs. C'est là que Spring Data fait gagner du code lisible. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <!-- JdbcClient pour les trois écritures que JPA ne sait pas exprimer :
+         le claim (UPDATE … SKIP LOCKED … RETURNING), l'écriture du verdict et
+         le reaper. Voir ARCHITECTURE.md §6.1. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <!-- Export Prometheus des métriques. Justification (règle B-11) : sans lui,
+         les métriques de ARCHITECTURE.md §12 — dont la jauge d'alerte « âge du
+         plus vieux fichier en attente » et celle des violations d'invariant —
+         ne sont lisibles par aucun outil de supervision. Version gérée par
+         Spring Boot ; aucun code n'en dépend (Micrometer seul est utilisé). -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- Authentification (lot B8, ADR-0014). Justification (règle B-11) :
+         vérifier un jeton OpenID Connect — signature par JWKS, émetteur,
+         audience, échéance — est exactement ce qu'il ne faut pas écrire
+         soi-même. Toujours active : aucun réglage ne la coupe. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
+    </dependency>
+    <!-- Connexion du navigateur (ADR-0012). Justification (règle B-11) : le
+         service est le client CONFIDENTIEL de Keycloak — code d'autorisation,
+         PKCE, state, nonce, échange du code authentifié par le secret client,
+         vérification du jeton d'identité, rafraîchissement, déconnexion OpenID
+         Connect. C'est un protocole qu'il ne faut pas réécrire à la main. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security-oauth2-client</artifactId>
+    </dependency>
+    <!-- Session du navigateur partagée entre les nœuds (ADR-0012).
+         Justification (règle B-11) : le client OAuth2 de Spring range la
+         connexion en cours, l'utilisateur et ses jetons dans la session HTTP ;
+         Spring Session la place dans PostgreSQL, déjà présent, au lieu de la
+         mémoire d'un nœud (règle B-10). Aucun code : une dépendance, deux
+         tables, une configuration. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-session-jdbc</artifactId>
+    </dependency>
+
+    <!-- Stockage objet. Justification (règle B-11) : le cadrage du 21/09 demande un
+         stockage partagé de type objet plutôt que le disque local, et
+         l'isolation quarantaine / zone servable repose sur trois jeux
+         d'identifiants S3 distincts — la dernière ligne de défense de
+         l'invariant. Le SDK officiel est la voie raisonnable vers une API S3.
+
+         `apache5-client` est le client HTTP synchrone par défaut du SDK 2.5x ;
+         il est déclaré en `compile` parce que le code le construit
+         explicitement pour poser un timeout de connexion ET de lecture
+         (règle B-7), au lieu d'accepter les valeurs par défaut sans les écrire. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>apache5-client</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- Depuis Flyway 10, le support de chaque moteur est un module distinct :
+         sans celui-ci, le démarrage échoue sur « Unsupported Database ». -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Tests : PostgreSQL réel. Les garanties vérifiées (FOR UPDATE SKIP
+         LOCKED, index partiels, prédicats totaux) sont des comportements de
+         PostgreSQL ; les tester sur H2 ne prouverait rien. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Justification (règle B-11) : l'antivirus est consommé par une API HTTP,
+         et ses modes de panne — silence, lenteur, réponse illisible, 412, 413,
+         limite atteinte — ne se provoquent pas sur commande avec le vrai moteur.
+         WireMock les simule au niveau du protocole. Le vrai moteur reste testé,
+         lui, sur le parcours EICAR. Version autonome : Jetty y est embarqué et
+         ne rencontre pas celui de Spring Boot. -->
+    <dependency>
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-standalone</artifactId>
+      <version>${wiremock.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- La frontière entre couches, vérifiée par le build. -->
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <version>${archunit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <!-- ./mvnw spring-boot:run : le service sur le poste, contre
+             l'infrastructure de docker-compose.yml, avec ses identifiants de
+             développement (application-local.yml). Le JAR, lui, n'active aucun
+             profil : sans identifiants fournis, il refuse de démarrer. -->
+        <configuration>
+          <profiles>
+            <profile>local</profile>
+          </profiles>
+        </configuration>
+      </plugin>
+
+      <!-- Deux exécutions de tests.
+           - La suite ordinaire, avec la mémoire par défaut.
+           - La preuve mémoire (@Tag("memory")), dans sa propre JVM plafonnée à
+             256 Mo, soit la MOITIÉ du plus gros fichier accepté : si quoi que ce
+             soit mettait le corps en tampon, ce test tomberait en OutOfMemoryError.
+             C'est la mesure du spike, rejouée à chaque construction. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludedGroups>memory</excludedGroups>
+        </configuration>
+        <executions>
+          <execution>
+            <id>bounded-memory</id>
+            <goals><goal>test</goal></goals>
+            <configuration>
+              <groups>memory</groups>
+              <excludedGroups combine.self="override"/>
+              <argLine>-Xmx256m</argLine>
+              <reportsDirectory>${project.build.directory}/surefire-reports-memory</reportsDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>${maven-enforcer-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>enforce-build-environment</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[21,22)</version>
+                  <message>Java 21 is required (Temurin 21 is the documented toolchain).</message>
+                </requireJavaVersion>
+                <requireMavenVersion>
+                  <version>[3.9,)</version>
+                  <message>Use the bundled wrapper: ./mvnw</message>
+                </requireMavenVersion>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>
