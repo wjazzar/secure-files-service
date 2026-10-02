@@ -675,30 +675,156 @@ ce que la documentation supposait :
 
 ## 10. Limites connues et pistes d'amélioration
 
-Chaque limite dit **ce qui la ferait lever**.
+Chaque limite dit **ce qui la ferait lever**. Les quatre premières changeraient
+le comportement du service sous charge : elles sont détaillées. Les autres
+suivent, par thème.
+
+### 10.1 Sous charge : la file, la base, l'abus
+
+#### ① Une file pondérée par la taille des fichiers
+
+**Limite.** La file sert dans l'ordre d'arrivée, sans regarder la taille
+(`ORDER BY next_attempt_at, uploaded_at, id`), et les boucles d'analyse — 4 par
+nœud par défaut — sont interchangeables. Trois effets :
+
+- **Blocage en tête de file** : quatre fichiers de 500 Mo occupent les quatre
+  boucles, et un fichier de 100 Ko déposé juste après attend qu'une se libère.
+  Le lag des petits fichiers dépend des gros.
+- **Contention** : plusieurs gros fichiers analysés ensemble se disputent
+  l'antivirus, le disque et le réseau du stockage, qu'un fichier traverse
+  quatre fois (dépôt, relecture pour l'analyse, relecture et écriture pour la
+  promotion).
+- **Admission en fichiers, pas en octets** : 500 fichiers de 500 Mo passent
+  sous la borne et représentent ~1 h 30 de retard.
+
+**Déclencheur.** Un mélange de tailles où l'attente des petits fichiers
+compte : un usage interactif à côté d'envois volumineux.
+
+**Piste.** Sans composant de plus, la file reste la table :
+
+1. **Des voies par classe de taille** : une part des boucles ne prend que les
+   petits fichiers (`AND size_bytes <= :seuil` dans le claim), les autres
+   prennent tout. Un petit fichier n'attend plus derrière un gros.
+2. **Un budget d'octets en cours d'analyse** : un gros fichier n'est pris que
+   si la somme des tailles en `SCANNING` et `PROMOTING` reste sous un plafond.
+   C'est lui qui borne la contention : le nombre de boucles ne borne que le
+   nombre de fichiers.
+3. **Un ordre pondéré, avec vieillissement** : servir le plus court d'abord
+   réduit le lag moyen mais affame les gros. Le score serait l'attente
+   rapportée à la taille, pour qu'un gros fichier finisse toujours par passer.
+4. **L'admission en octets** : une borne sur `praxedo_queue_depth_bytes`, qui
+   existe déjà.
+
+À mesurer d'abord : la campagne à fichiers de 500 Mo n'a pas été menée
+([capacity planning](docs/capacity-planning/README.md#limites-et-pistes-damélioration)),
+et le lag n'est pas ventilé par taille — une étiquette de classe sur
+`praxedo_pipeline_lag_seconds` le donnerait.
+
+#### ② Délester quand la base ralentit
+
+**Limite.** ⭐ Au-delà du plafond de la base, le débit **s'effondre** au lieu de
+plafonner : la borne d'admission regarde la file, pas la latence de la base.
+
+**Déclencheur.** Toute exploitation où la base peut ralentir.
+
+**Piste.** Refuser un dépôt (`429`) quand l'attente d'une connexion dépasse un
+seuil ; et reculer le plafond lui-même, sans changer l'architecture : disque
+dédié à la base, validations regroupées (§6).
+
+#### ③ Un broker, pour sortir la file de la base
+
+**Limite.** La base fait file
+([ADR-0001](docs/adr/0001-la-base-de-donnees-fait-file.md)), et c'est elle qui
+plafonne. Un fichier coûte quatre écritures — dépôt, claim, verdict, passage à
+`AVAILABLE` — et les sessions attendent l'écriture du journal, sans aucune
+attente de verrou (§6). Ajouter des nœuds ajoute des connexions qui se
+disputent le même journal.
+
+**Déclencheur.** Un besoin au-delà de ~150 fichiers/s par base, **après** les
+leviers de ② : un broker est un composant de plus, il n'entre qu'une fois les
+réglages épuisés.
+
+**Piste.** Un broker (RabbitMQ, Kafka) distribue le travail ; la base ne garde
+que l'état.
+
+| | |
+|---|---|
+| **Ce qu'il retire** | Le claim — une écriture sur quatre —, la scrutation de la file par les boucles, et le *reaper* : accusé de réception et redistribution deviennent ceux du broker. Les fichiers en attente ne pèsent plus sur la base. Les voies par taille de ① deviennent des files distinctes, chacune avec ses consommateurs |
+| **Ce qu'il ne retire pas** | Le dépôt, le verdict et le passage à `AVAILABLE` restent des écritures en base : l'invariant y vit (contraintes `CHECK`, audit par trigger) et n'en sort pas. Le plafond recule, il ne disparaît pas |
+| **Ce qu'il coûte** | Aujourd'hui la ligne **est** le travail : rien à synchroniser. Avec un broker, écrire la ligne et publier le message touchent deux systèmes : il faut une *outbox*, écrite dans la transaction du dépôt et relayée par lots, ou une lecture du journal de la base (CDC). Les messages arrivent au moins une fois : les doublons sont absorbés par une écriture conditionnelle sur l'état de la ligne, comme aujourd'hui sur le jeton du bail. Et un composant de plus à exploiter, superviser et sauvegarder |
+
+#### ④ Une limite de débit par adresse IP
+
+**Limite.** Le service ne limite le débit d'aucun appelant : l'hypothèse (§9)
+est qu'une passerelle d'API le fait. Sans elle, `/api/v1/auth/login` crée une
+session en base à chaque appel, même sans compte ; et les deux bornes
+d'admission (50 dépôts simultanés par nœud, 500 fichiers en attente) sont
+globales : un seul appelant peut les consommer.
+
+**Déclencheur.** Service exposé sans passerelle d'API, ou passerelle qui ne
+limite pas par IP.
+
+**Piste.** Un seau à jetons par adresse IP, dans un filtre placé **avant**
+l'authentification, qui répond `429` + `Retry-After` (code d'erreur à ajouter
+au contrat). Quatre points à trancher :
+
+- **Quelle adresse** : derrière un proxy, `X-Forwarded-For` ne vaut que s'il
+  vient d'un proxy déclaré de confiance ; sinon il se forge.
+- **Des seuils par usage** : stricts sur la connexion, plus larges sur les
+  lectures, en octets par minute sur les dépôts.
+- **L'IP ne suffit pas** : un réseau d'entreprise sort par une seule adresse.
+  La limite par IP protège ce qui est anonyme ; une fois l'appelant
+  authentifié, c'est la limite par principal (`sub`) qui fait foi.
+- **Plusieurs nœuds** : des compteurs en mémoire donnent une limite multipliée
+  par le nombre de nœuds — une première protection, sans composant de plus.
+  Une limite exacte demande des compteurs partagés (Redis, ou la passerelle).
+
+Pour la connexion, ne créer la session qu'au retour de Keycloak retire en plus
+le coût en base.
+
+### 10.2 Les autres limites, par thème
+
+**Antivirus**
 
 | Limite | Déclencheur | Piste |
 |---|---|---|
 | ⭐ **Angle mort zip64 du moteur** | Dès que des archives venues de l'extérieur sont attendues | Politique d'archives côté service (refuser ou classer « non analysable » ce que le moteur ne sait pas ouvrir), second moteur, signalement à l'équipe ClamAV |
 | ⭐ **Archive chiffrée déclarée saine** : le moteur ne peut pas l'ouvrir et, tel qu'il est configuré, ne le signale pas (`AlertEncryptedArchive` désactivé) — mesuré le 02/10 : `200` pour une archive dont l'entrée est marquée chiffrée | Dès que des archives venues de l'extérieur sont attendues | Activer `AlertEncryptedArchive` dans l'image, et classer `Heuristics.Encrypted.*` « non analysable » (le motif `ENCRYPTED_ARCHIVE` existe déjà au contrat), avec un test contre le vrai moteur |
-| ⭐ **Au-delà du plafond de la base, le débit s'effondre** au lieu de plafonner | Toute exploitation où la base peut ralentir | Délester quand l'attente d'une connexion dépasse un seuil ; disque dédié, validations regroupées (§6) |
-| Montée en charge horizontale non démontrée sur ce banc | Avant d'annoncer un débit à plusieurs nœuds | Campagne de contrôle : trois nœuds, base sans attente du disque |
-| Corpus de charge non représentatif (octets aléatoires) | Avant une capacité de production | Rejouer avec des PDF, documents Office et archives anonymisés ; remesurer ClamAV |
-| Admission bornée en nombre de fichiers, pas en octets | Des dépôts volumineux en volume | Borne sur `praxedo_queue_depth_bytes`, qui existe déjà |
-| **Limitation acceptée** : pas de limite de débit par client, y compris sur `/api/v1/auth/login`, qui crée une session en base à chaque appel, même sans compte | Service exposé sans passerelle d'API (§9) | Limite par IP et par principal à la passerelle. Dans le service, il faudrait des compteurs partagés entre nœuds (Redis) ; pour la connexion, ne créer la session qu'au retour de Keycloak |
-| **Limitation acceptée** : pas de quota par utilisateur. Un seul compte peut remplir la file commune (500 fichiers) et faire refuser les dépôts des autres ; une limite de débit ne l'empêche pas, elle le ralentit seulement | Un client qui monopolise la file, ou des clients d'importance différente | Borne de fichiers en attente par propriétaire, comptée dans PostgreSQL (l'index `(owner_id, status)` existe), donc partagée entre nœuds sans composant de plus ; plafond d'octets stockés par propriétaire |
-| Un dépôt lent garde sa place jusqu'à son **échéance** (60 s + 8 s par Mio annoncé), pas au-delà ; mais un client qui annonce 500 Mo et envoie juste au-dessus de ~1 Mbit/s la garde ~68 min | Plusieurs clients qui monopolisent les 50 places d'un nœud à ce rythme | Quota de dépôts simultanés par propriétaire (compté en base, comme le quota de fichiers en attente) ; débit minimal à la passerelle |
-| Les téléchargements traversent le service | Débit sortant supérieur à ce qu'un nœud sert | URL présignée émise **après** revérification, ou CDN |
-| Pas de lien de partage | Partager un fichier avec quelqu'un sans compte | Une fonctionnalité à part entière : lien explicite, révocable, audité — pas un détail d'authentification |
 | Pas de réanalyse quand les signatures évoluent | Exigence de conformité, ou menace découverte après coup | Nouvel état `RESCANNING`, réanalyse périodique des fichiers disponibles |
 | Pas de déduplication des verdicts | Mêmes fichiers déposés massivement | Réutiliser un verdict par SHA-256, conditionné à la version des signatures et à l'âge |
 | Pas de rétention des fichiers infectés | Politique de rétention définie | Purge planifiée, l'audit restant |
-| Images d'outillage local avec des failles connues : Keycloak 26.4.7 (7 critiques), Grafana (5), `aws-cli` | Toute exposition hors du poste | Keycloak sur sa ligne courante, Grafana sur une ligne maintenue, création des zones sans `aws-cli` ([`docs/33`](docs/33-analyse-des-dependances.md)) |
-| Durée des opérations de stockage non mesurée | Stockage soupçonné d'être le goulot | Décorateur des ports de stockage, sur le modèle de celui de l'antivirus |
 | Au-delà de 500 Mo, rien | Fichiers plus gros | Envoi reprenable (tus) et limites de l'antivirus revues **ensemble** — jamais en découpant pour l'analyse |
+
+**Capacité**
+
+| Limite | Déclencheur | Piste |
+|---|---|---|
+| Montée en charge horizontale non démontrée sur ce banc | Avant d'annoncer un débit à plusieurs nœuds | Campagne de contrôle : trois nœuds, base sans attente du disque |
+| Corpus de charge non représentatif (octets aléatoires) | Avant une capacité de production | Rejouer avec des PDF, documents Office et archives anonymisés ; remesurer ClamAV |
+| Durée des opérations de stockage non mesurée | Stockage soupçonné d'être le goulot | Décorateur des ports de stockage, sur le modèle de celui de l'antivirus |
+| Les téléchargements traversent le service | Débit sortant supérieur à ce qu'un nœud sert | URL présignée émise **après** revérification, ou CDN |
+
+**Quotas**
+
+| Limite | Déclencheur | Piste |
+|---|---|---|
+| **Limitation acceptée** : pas de quota par utilisateur. Un seul compte peut remplir la file commune (500 fichiers) et faire refuser les dépôts des autres ; une limite de débit ne l'empêche pas, elle le ralentit seulement | Un client qui monopolise la file, ou des clients d'importance différente | Borne de fichiers en attente par propriétaire, comptée dans PostgreSQL (l'index `(owner_id, status)` existe), donc partagée entre nœuds sans composant de plus ; plafond d'octets stockés par propriétaire |
+| Un dépôt lent garde sa place jusqu'à son **échéance** (60 s + 8 s par Mio annoncé), pas au-delà ; mais un client qui annonce 500 Mo et envoie juste au-dessus de ~1 Mbit/s la garde ~68 min | Plusieurs clients qui monopolisent les 50 places d'un nœud à ce rythme | Quota de dépôts simultanés par propriétaire (compté en base, comme le quota de fichiers en attente) ; débit minimal à la passerelle |
+
+**Session, identité, partage**
+
+| Limite | Déclencheur | Piste |
+|---|---|---|
 | Révocation dans Keycloak effective en 5 min | Besoin de révocation immédiate | Déconnexion par canal arrière d'OpenID Connect, avec un registre des sessions partagé entre nœuds |
 | Identifiant de session en clair en base (Spring Session) | Exigence « rien d'exploitable dans une copie de la base » | N'y ranger que son empreinte, ou chiffrer les attributs au repos |
 | Une lecture de la table des sessions par requête du navigateur | Latence de la base visible, ou trafic navigateur très élevé | Spring Session sur Redis (même API, aucun changement de code applicatif) |
+| Pas de lien de partage | Partager un fichier avec quelqu'un sans compte | Une fonctionnalité à part entière : lien explicite, révocable, audité — pas un détail d'authentification |
+
+**Outillage**
+
+| Limite | Déclencheur | Piste |
+|---|---|---|
+| Images d'outillage local avec des failles connues : Keycloak 26.4.7 (7 critiques), Grafana (5), `aws-cli` | Toute exposition hors du poste | Keycloak sur sa ligne courante, Grafana sur une ligne maintenue, création des zones sans `aws-cli` ([`docs/33`](docs/33-analyse-des-dependances.md)) |
 
 ---
 
